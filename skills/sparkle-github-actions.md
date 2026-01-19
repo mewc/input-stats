@@ -2,6 +2,37 @@
 
 This guide covers how to set up Sparkle for macOS app auto-updates using GitHub releases and Actions for signing.
 
+---
+
+## ⚠️ CRITICAL: Preserve Symlinks or Gatekeeper Will Reject Your App
+
+**The Sparkle.framework uses symlinks internally. If you break them, Gatekeeper rejects the app with: "bundle format is ambiguous (could be app or framework)"**
+
+Two commands will silently destroy your app bundle:
+
+| ❌ WRONG | ✅ CORRECT |
+|----------|-----------|
+| `cp -R Sparkle.framework dest/` | `cp -a Sparkle.framework dest/` |
+| `zip -r App.zip App.app` | `ditto -c -k --keepParent App.app App.zip` |
+
+- `cp -R` dereferences symlinks, copying file contents instead
+- `zip -r` also dereferences symlinks by default
+- `cp -a` preserves symlinks (archive mode)
+- `ditto` is macOS-native and handles symlinks correctly
+
+**Always verify your framework structure has symlinks:**
+```bash
+ls -la YourApp.app/Contents/Frameworks/Sparkle.framework/
+# Should show symlinks like:
+# Headers -> Versions/Current/Headers
+# Sparkle -> Versions/Current/Sparkle
+# Resources -> Versions/Current/Resources
+```
+
+If you see actual directories/files instead of symlinks, your bundle is broken.
+
+---
+
 ## Overview
 
 - **Sparkle**: macOS framework for app updates
@@ -112,10 +143,10 @@ mkdir -p "$BUNDLE_NAME/Contents/Frameworks"
 cp "$BUILD_DIR/release/YourApp" "$BUNDLE_NAME/Contents/MacOS/"
 cp Info.plist "$BUNDLE_NAME/Contents/"
 
-# Copy Sparkle framework
+# Copy Sparkle framework (MUST use cp -a to preserve symlinks!)
 SPARKLE_PATH=$(find "$BUILD_DIR" -name "Sparkle.framework" -type d | head -1)
 if [ -n "$SPARKLE_PATH" ]; then
-    cp -R "$SPARKLE_PATH" "$BUNDLE_NAME/Contents/Frameworks/"
+    cp -a "$SPARKLE_PATH" "$BUNDLE_NAME/Contents/Frameworks/"
     install_name_tool -add_rpath "@executable_path/../Frameworks" "$BUNDLE_NAME/Contents/MacOS/YourApp" 2>/dev/null || true
 fi
 
@@ -178,7 +209,8 @@ jobs:
         run: ./build.sh
 
       - name: Create zip
-        run: zip -r YourApp.zip YourApp.app
+        # MUST use ditto, NOT zip! zip dereferences symlinks and breaks Sparkle.framework
+        run: ditto -c -k --keepParent YourApp.app YourApp.zip
 
       - name: Get version
         id: version
@@ -256,6 +288,20 @@ This triggers the workflow which:
 4. Creates a GitHub release with the zip
 
 ## Common Issues
+
+### "bundle format is ambiguous (could be app or framework)"
+
+**Cause**: Sparkle.framework symlinks were dereferenced during copy or zip.
+
+**Fix**:
+- Use `cp -a` instead of `cp -R` when copying the framework
+- Use `ditto -c -k --keepParent` instead of `zip -r` when creating archives
+
+**Verify**: Check framework structure:
+```bash
+ls -la YourApp.app/Contents/Frameworks/Sparkle.framework/
+# Must show symlinks (->), not directories
+```
 
 ### "Update is improperly signed"
 
