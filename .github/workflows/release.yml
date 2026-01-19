@@ -54,7 +54,7 @@ jobs:
         run: ./build.sh --release --notarize
 
       - name: Create zip
-        run: zip -r TypingStats.zip "Typing Stats.app"
+        run: ditto -c -k --keepParent "Typing Stats.app" TypingStats.zip
 
       - name: Download Sparkle
         run: |
