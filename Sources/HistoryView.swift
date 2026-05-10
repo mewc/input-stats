@@ -166,6 +166,8 @@ func getAppDisplayName(for bundleID: String) -> String {
 struct ChartSection: View, Equatable {
     let chartData: [DailyDataWithApps]
     let selectedDays: Int
+    @State private var hoveredDay: DailyDataWithApps?
+    @State private var tooltipPosition: CGPoint = .zero
 
     static func == (lhs: ChartSection, rhs: ChartSection) -> Bool {
         lhs.chartData == rhs.chartData && lhs.selectedDays == rhs.selectedDays
@@ -180,7 +182,13 @@ struct ChartSection: View, Equatable {
                         y: .value("Count", app.count)
                     )
                     .foregroundStyle(app.color)
+                    .opacity(hoveredDay == nil || hoveredDay?.id == day.id ? 1.0 : 0.3)
                 }
+            }
+            if let day = hoveredDay {
+                RuleMark(x: .value("Date", day.date, unit: .day))
+                    .foregroundStyle(.gray.opacity(0.3))
+                    .lineStyle(StrokeStyle(lineWidth: 1))
             }
         }
         .frame(height: 150)
@@ -190,6 +198,77 @@ struct ChartSection: View, Equatable {
                 AxisValueLabel(format: .dateTime.month(.abbreviated).day())
             }
         }
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                Rectangle()
+                    .fill(.clear)
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let location):
+                            guard let date: Date = proxy.value(atX: location.x) else {
+                                hoveredDay = nil
+                                return
+                            }
+                            let calendar = Calendar.current
+                            hoveredDay = chartData.first { item in
+                                calendar.isDate(item.date, inSameDayAs: date)
+                            }
+                            tooltipPosition = CGPoint(x: location.x, y: 0)
+                        case .ended:
+                            hoveredDay = nil
+                        }
+                    }
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if let day = hoveredDay {
+                ChartTooltip(day: day)
+                    .offset(x: max(0, min(tooltipPosition.x - 70, 400)), y: -4)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
+struct ChartTooltip: View {
+    let day: DailyDataWithApps
+
+    private static let tooltipDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d"
+        return f
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(Self.tooltipDateFormatter.string(from: day.date))
+                .font(.system(size: 10, weight: .semibold))
+            ForEach(day.appBreakdown) { app in
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(app.color)
+                        .frame(width: 6, height: 6)
+                    Text(app.displayName)
+                        .font(.system(size: 9))
+                    Spacer()
+                    Text("\(day.totalCount > 0 ? Int(round(Double(app.count) / Double(day.totalCount) * 100)) : 0)%")
+                        .font(.system(size: 9, weight: .medium).monospacedDigit())
+                }
+            }
+            HStack {
+                Text("Total")
+                    .font(.system(size: 9, weight: .medium))
+                Spacer()
+                Text("\(day.totalCount)")
+                    .font(.system(size: 9, weight: .medium).monospacedDigit())
+            }
+            .padding(.top, 1)
+        }
+        .padding(6)
+        .frame(width: 140)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+        .shadow(radius: 4)
     }
 }
 

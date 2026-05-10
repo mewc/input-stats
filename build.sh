@@ -1,8 +1,6 @@
 #!/bin/bash
 set -e
 
-APP_NAME="Typing Stats"
-BUNDLE_NAME="Typing Stats.app"
 BUILD_DIR=".build"
 
 # Parse arguments
@@ -28,9 +26,13 @@ echo "Version: $VERSION"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" Info.plist
 
 if [ "$RELEASE_BUILD" = true ]; then
+    APP_NAME="Typing Stats"
+    BUNDLE_NAME="Typing Stats.app"
     echo "Building TypingStats (RELEASE)..."
     swift build -c release
 else
+    APP_NAME="Typing Stats (Dev)"
+    BUNDLE_NAME="Typing Stats (Dev).app"
     echo "Building TypingStats (DEV)..."
     swift build -c release -Xswiftc -DDEV_BUILD
 fi
@@ -43,6 +45,11 @@ mkdir -p "$BUNDLE_NAME/Contents/Frameworks"
 
 cp "$BUILD_DIR/release/TypingStats" "$BUNDLE_NAME/Contents/MacOS/"
 cp Info.plist "$BUNDLE_NAME/Contents/"
+if [ "$RELEASE_BUILD" != true ]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.typing-stats.app.dev" "$BUNDLE_NAME/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Typing Stats (Dev)" "$BUNDLE_NAME/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleName Typing Stats (Dev)" "$BUNDLE_NAME/Contents/Info.plist"
+fi
 cp AppIcon.icns "$BUNDLE_NAME/Contents/Resources/"
 
 # Copy Sparkle framework (use cp -a to preserve symlinks)
