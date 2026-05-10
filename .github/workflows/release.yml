@@ -48,9 +48,9 @@ jobs:
       - name: Build and notarize
         env:
           SIGNING_IDENTITY: "Developer ID Application: Guillermo Rauch (DD5LU2JV6J)"
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
-          APPLE_TEAM_ID: "DD5LU2JV6J"
+          APP_STORE_CONNECT_KEY: ${{ secrets.APP_STORE_CONNECT_KEY }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: ./build.sh --release --notarize
 
       - name: Create zip
