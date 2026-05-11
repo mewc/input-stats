@@ -24,6 +24,10 @@ The app requires Accessibility permission to count keystrokes. You'll be prompte
 
 **System Settings → Privacy & Security → Accessibility**
 
+## Contributors
+
+- [Ghoshan Jaganathamani](https://github.com/ghostyfreak) — Better analytics
+
 ## Uninstall
 
 ```bash
