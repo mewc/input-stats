@@ -15,6 +15,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var syncTimer: Timer?
     private var fileMonitor: DispatchSourceFileSystemObject?
     private var lastSyncTime: Date?
+    // in-memory cache; disk syncs happen async
+    private var cachedSyncData = SyncData()
     private var updateChecker = UpdateChecker.shared
     private var updateDotLayer: CALayer?
 
@@ -194,6 +196,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
 
             updated.pruneAllDevices(keepingDays: 60)
+            self.cachedSyncData = updated
             self.totalKeystrokeCount = updated.totalCount(for: today)
             self.saveLocalCount()
             return updated
@@ -283,13 +286,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
 
             let syncData = self.loadSyncData(from: url)
-            let newTotal = syncData.totalCount(for: today)
 
             DispatchQueue.main.async {
+                self.cachedSyncData = syncData
+                // Re-apply local count — may have advanced while sync was in flight
+                if self.cachedSyncData.devices[self.deviceID] == nil {
+                    self.cachedSyncData.devices[self.deviceID] = DeviceData()
+                }
+                self.cachedSyncData.devices[self.deviceID]?.setCount(self.localKeystrokeCount, for: today, appCounts: self.localAppCounts.isEmpty ? nil : self.localAppCounts)
                 self.lastSyncTime = Date()
 
-                if newTotal != self.totalKeystrokeCount {
-                    self.totalKeystrokeCount = newTotal
+                let reconciledTotal = self.cachedSyncData.totalCount(for: today)
+                if reconciledTotal != self.totalKeystrokeCount {
+                    self.totalKeystrokeCount = reconciledTotal
                     self.updateMenuBarTitle()
                 }
             }
@@ -350,11 +359,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
 
-            let newTotal = syncData.totalCount(for: today)
+            DispatchQueue.main.async {
+                self.cachedSyncData = syncData
+                // Re-apply local count — may have advanced while reading file
+                if self.cachedSyncData.devices[self.deviceID] == nil {
+                    self.cachedSyncData.devices[self.deviceID] = DeviceData()
+                }
+                self.cachedSyncData.devices[self.deviceID]?.setCount(self.localKeystrokeCount, for: today, appCounts: self.localAppCounts.isEmpty ? nil : self.localAppCounts)
 
-            if newTotal != self.totalKeystrokeCount {
-                DispatchQueue.main.async {
-                    self.totalKeystrokeCount = newTotal
+                let reconciledTotal = self.cachedSyncData.totalCount(for: today)
+                if reconciledTotal != self.totalKeystrokeCount {
+                    self.totalKeystrokeCount = reconciledTotal
                     self.updateMenuBarTitle()
                 }
             }
@@ -430,20 +445,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func getStats() -> (today: Int, yesterday: Int, avg7: Double, avg30: Double, recordCount: Int, recordDate: String?) {
-        guard let url = syncFileURL else {
-            return (totalKeystrokeCount, 0, 0, 0, totalKeystrokeCount, nil)
-        }
-
-        let syncData = loadSyncData(from: url)
         let today = todayString()
         let yesterday = yesterdayString()
 
-        let todayCount = syncData.totalCount(for: today)
-        let yesterdayCount = syncData.totalCount(for: yesterday)
-        let avg7 = syncData.averageCount(forLastDays: 7, from: Date())
-        let avg30 = syncData.averageCount(forLastDays: 30, from: Date())
-
-        let record = syncData.recordDay()
+        let todayCount = cachedSyncData.totalCount(for: today)
+        let yesterdayCount = cachedSyncData.totalCount(for: yesterday)
+        let avg7 = cachedSyncData.averageCount(forLastDays: 7, from: Date())
+        let avg30 = cachedSyncData.averageCount(forLastDays: 30, from: Date())
+        let record = cachedSyncData.recordDay()
 
         return (todayCount, yesterdayCount, avg7, avg30, record?.count ?? 0, record?.date)
     }
@@ -669,33 +678,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        // Sync local data to cloud before showing menu (like openHistory does)
-        if let url = syncFileURL {
-            checkDayChange()
-            saveLocalCount()
-            let today = todayString()
-            let currentCount = localKeystrokeCount
-            let currentAppCounts = localAppCounts
-            coordinatedSync(to: url, forceMerge: false) { existingData in
-                var syncData = existingData
-                if syncData.devices[self.deviceID] == nil {
-                    syncData.devices[self.deviceID] = DeviceData()
-                }
-                let existingCount = syncData.devices[self.deviceID]?.count(for: today) ?? 0
-                if currentCount > existingCount {
-                    syncData.devices[self.deviceID]?.setCount(currentCount, for: today, appCounts: currentAppCounts.isEmpty ? nil : currentAppCounts)
-                }
-                return syncData
-            }
-
-            // Load the merged data and update the menu bar title
-            let syncData = loadSyncData(from: url)
-            let newTotal = syncData.totalCount(for: today)
-            if newTotal != totalKeystrokeCount {
-                totalKeystrokeCount = newTotal
-                updateMenuBarTitle()
-            }
-        }
+        checkDayChange()
         rebuildMenu()
     }
 
@@ -750,25 +733,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let url = syncFileURL else { return }
 
         checkDayChange()
-        saveLocalCount()
-        let today = todayString()
-        let currentCount = localKeystrokeCount
-        let currentAppCounts = localAppCounts
-        coordinatedSync(to: url, forceMerge: false) { existingData in
-            var syncData = existingData
-            if syncData.devices[self.deviceID] == nil {
-                syncData.devices[self.deviceID] = DeviceData()
-            }
-            let existingCount = syncData.devices[self.deviceID]?.count(for: today) ?? 0
-            if currentCount > existingCount {
-                syncData.devices[self.deviceID]?.setCount(currentCount, for: today, appCounts: currentAppCounts.isEmpty ? nil : currentAppCounts)
-            }
-            return syncData
-        }
 
-        let syncData = loadSyncData(from: url)
-
-        historyWindowController = HistoryWindowController(syncData: syncData, dataFileURL: url)
+        historyWindowController = HistoryWindowController(syncData: cachedSyncData, dataFileURL: url)
         historyWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -786,22 +752,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             localAppCounts = [:]
             saveLocalCount()
 
-            guard let url = syncFileURL else { return }
             let today = todayString()
 
-            coordinatedSync(to: url, forceMerge: false) { existingData in
-                var syncData = existingData
-                if syncData.devices[self.deviceID] == nil {
-                    syncData.devices[self.deviceID] = DeviceData()
-                }
-                syncData.devices[self.deviceID]?.setCount(0, for: today, appCounts: nil)
-                return syncData
+            if cachedSyncData.devices[deviceID] == nil {
+                cachedSyncData.devices[deviceID] = DeviceData()
             }
-
-            let syncData = loadSyncData(from: url)
-            totalKeystrokeCount = syncData.totalCount(for: today)
-
+            cachedSyncData.devices[deviceID]?.setCount(0, for: today, appCounts: nil)
+            totalKeystrokeCount = cachedSyncData.totalCount(for: today)
             updateMenuBarTitle()
+
+            // Write reset to iCloud file async
+            if let url = syncFileURL {
+                syncQueue.async {
+                    self.coordinatedSync(to: url, forceMerge: false) { existingData in
+                        var syncData = existingData
+                        if syncData.devices[self.deviceID] == nil {
+                            syncData.devices[self.deviceID] = DeviceData()
+                        }
+                        syncData.devices[self.deviceID]?.setCount(0, for: today, appCounts: nil)
+                        return syncData
+                    }
+                }
+            }
         }
     }
 
@@ -876,12 +848,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         localKeystrokeCount += 1
         totalKeystrokeCount += 1
 
+        // Keep cache current so menu reads never hit disk
+        if cachedSyncData.devices[deviceID] == nil {
+            cachedSyncData.devices[deviceID] = DeviceData()
+        }
+        cachedSyncData.devices[deviceID]?.setCount(localKeystrokeCount, for: todayString(), appCounts: localAppCounts.isEmpty ? nil : localAppCounts)
+
         updateMenuBarTitle()
 
         if localKeystrokeCount % 50 == 0 {
             saveLocalCount()
         }
 
+        // Flush to iCloud file in background
         if localKeystrokeCount % 1000 == 0 {
             syncToCloud()
         }
