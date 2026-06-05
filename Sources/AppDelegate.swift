@@ -811,16 +811,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Keystroke Monitoring
 
     private func startMonitoring() {
-        let eventMask: CGEventMask =
-            (1 << CGEventType.keyDown.rawValue) |
-            (1 << CGEventType.leftMouseDown.rawValue) |
-            (1 << CGEventType.rightMouseDown.rawValue) |
-            (1 << CGEventType.otherMouseDown.rawValue) |
-            (1 << CGEventType.scrollWheel.rawValue) |
-            (1 << CGEventType.mouseMoved.rawValue) |
-            (1 << CGEventType.leftMouseDragged.rawValue) |
-            (1 << CGEventType.rightMouseDragged.rawValue) |
-            (1 << CGEventType.otherMouseDragged.rawValue)
+        let trackedTypes: [CGEventType] = [
+            .keyDown,
+            .leftMouseDown, .rightMouseDown, .otherMouseDown,
+            .scrollWheel,
+            .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
+        ]
+        var eventMask: CGEventMask = 0
+        for type in trackedTypes {
+            eventMask |= CGEventMask(1) << CGEventMask(type.rawValue)
+        }
 
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
