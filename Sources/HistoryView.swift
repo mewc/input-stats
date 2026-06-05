@@ -415,23 +415,27 @@ struct HistoryView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 8) {
+            HStack(spacing: 12) {
                 Picker("", selection: $tab) {
                     Text("Keys").tag(0)
                     Text("Mouse").tag(1)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 240)
+                .frame(width: 150)
+
+                Spacer()
 
                 Picker("", selection: $viewMode) {
                     Text("Daily").tag(0)
                     Text("Timeseries").tag(1)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 240)
+                .frame(width: 190)
             }
             .padding([.horizontal, .top])
-            .padding(.bottom, 6)
+            .padding(.bottom, 10)
+
+            Divider()
 
             if tab == 0 {
                 if viewMode == 0 {
@@ -777,31 +781,23 @@ struct SpanResolutionControls: View {
     @Binding var resolution: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Picker("", selection: $span) {
-                    ForEach(TimeSpan.allCases) { s in Text(s.label).tag(s) }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 230)
-                Spacer()
-                Text(resolutionLabel(resolution) + " blocks")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+        HStack(spacing: 10) {
+            Picker("", selection: $span) {
+                ForEach(TimeSpan.allCases) { s in Text(s.label).tag(s) }
             }
-            HStack(spacing: 6) {
-                Text("Resolution")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Picker("", selection: $resolution) {
-                    ForEach(span.allowedResolutions, id: \.self) { res in
-                        Text(resolutionLabel(res)).tag(res)
-                    }
+            .pickerStyle(.segmented)
+            .layoutPriority(1)
+
+            Text("·").foregroundColor(.secondary)
+
+            Picker("", selection: $resolution) {
+                ForEach(span.allowedResolutions, id: \.self) { res in
+                    Text(resolutionLabel(res)).tag(res)
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 230)
-                Spacer()
             }
+            .pickerStyle(.segmented)
+            .fixedSize()
+            .help("Detail level per data point")
         }
     }
 }
