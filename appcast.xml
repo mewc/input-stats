@@ -1,16 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
-    <title>Typing Stats</title>
+    <title>Input Stats</title>
+    <!--
+      Auto-update is disabled for this fork (downloads-only distribution).
+      This feed exists only so the in-app "Check for Updates" button doesn't error.
+      To enable real Sparkle auto-updates later: generate your own EdDSA key
+      (Sparkle's `generate_keys`), put the public key in Info.plist SUPublicEDKey,
+      re-enable SUEnableAutomaticChecks, and have the release workflow sign the
+      zip and rewrite this item per release.
+    -->
     <item>
-      <title>Version 0.0.27</title>
-      <sparkle:version>0.0.27</sparkle:version>
-      <sparkle:shortVersionString>0.0.27</sparkle:shortVersionString>
-      <pubDate>Sun, 17 May 2026 04:13:59 +0000</pubDate>
-      <enclosure url="https://github.com/rauchg/typing-stats/releases/download/v0.0.27/TypingStats.zip"
-                 type="application/octet-stream"
-                 length="2595834"
-                 sparkle:edSignature="43HTpgDcHg25bOqsqzdq7B/TEw9o3lxbw93rPEX68GiNtMFsCXhupoG4OnjOv15veWcu4D06Ti1XwtGxyUqVBw=="/>
+      <title>Version 0.0.1</title>
+      <sparkle:version>0.0.1</sparkle:version>
+      <sparkle:shortVersionString>0.0.1</sparkle:shortVersionString>
     </item>
   </channel>
 </rss>

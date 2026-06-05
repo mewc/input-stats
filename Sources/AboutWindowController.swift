@@ -18,7 +18,7 @@ class AboutWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "About Typing Stats"
+        window.title = "About Input Stats"
         window.center()
 
         super.init(window: window)
@@ -44,7 +44,7 @@ class AboutWindowController: NSWindowController {
         iconView.setContentHuggingPriority(.required, for: .vertical)
 
         // App name
-        let nameLabel = NSTextField(labelWithString: "Typing Stats")
+        let nameLabel = NSTextField(labelWithString: "Input Stats")
         nameLabel.alignment = .center
         nameLabel.font = NSFont.boldSystemFont(ofSize: 14)
 
@@ -112,12 +112,12 @@ class AboutWindowController: NSWindowController {
         authorLabel.allowsEditingTextAttributes = true
         authorLabel.alignment = .center
 
-        let authorString = NSMutableAttributedString(string: "By Guillermo Rauch (")
+        let authorString = NSMutableAttributedString(string: "By mewc · based on Typing Stats by Guillermo Rauch (")
         authorString.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: NSRange(location: 0, length: authorString.length))
         authorString.addAttribute(.font, value: NSFont.systemFont(ofSize: 11), range: NSRange(location: 0, length: authorString.length))
 
         let linkString = NSMutableAttributedString(string: "source")
-        linkString.addAttribute(.link, value: "https://github.com/rauchg/typing-stats", range: NSRange(location: 0, length: linkString.length))
+        linkString.addAttribute(.link, value: "https://github.com/mewc/input-stats", range: NSRange(location: 0, length: linkString.length))
         linkString.addAttribute(.font, value: NSFont.systemFont(ofSize: 11), range: NSRange(location: 0, length: linkString.length))
 
         let closeParen = NSMutableAttributedString(string: ")")

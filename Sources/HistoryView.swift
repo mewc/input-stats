@@ -276,6 +276,8 @@ struct ChartTooltip: View {
 
 struct HistoryView: View {
     @ObservedObject var dataStore: HistoryDataStore
+    @State private var tab = 0       // 0 = Keys, 1 = Mouse
+    @State private var viewMode = 0  // 0 = Daily, 1 = Timeseries
     @State private var selectedDays = 7
     @State private var hiddenApps: Set<String> = []  // bundleIDs to hide from stats
     @State private var expandedDays: Set<String> = []  // dateStrings of expanded rows
@@ -413,69 +415,40 @@ struct HistoryView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Chart section
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Keystroke History")
-                        .font(.headline)
-                    Spacer()
-                    Picker("", selection: $selectedDays) {
-                        Text("7 days").tag(7)
-                        Text("30 days").tag(30)
-                        Text("60 days").tag(60)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 200)
+            VStack(spacing: 8) {
+                Picker("", selection: $tab) {
+                    Text("Keys").tag(0)
+                    Text("Mouse").tag(1)
                 }
-                
-                // Stacked bar chart (isolated to prevent flicker on row expand)
-                EquatableView(content: ChartSection(chartData: chartData, selectedDays: selectedDays))
-                
-                // Legend with toggle filtering (uses cached top apps)
-                HStack(spacing: 16) {
-                    ForEach(cachedTopApps, id: \.bundleID) { app in
-                        LegendItem(
-                            bundleID: app.bundleID,
-                            displayName: getAppDisplayName(for: app.bundleID),
-                            color: app.color,
-                            count: app.count,
-                            isHidden: hiddenApps.contains(app.bundleID)
-                        ) {
-                            if hiddenApps.contains(app.bundleID) {
-                                hiddenApps.remove(app.bundleID)
-                            } else {
-                                hiddenApps.insert(app.bundleID)
-                            }
-                        }
-                    }
-                    Spacer()
+                .pickerStyle(.segmented)
+                .frame(width: 240)
+
+                Picker("", selection: $viewMode) {
+                    Text("Daily").tag(0)
+                    Text("Timeseries").tag(1)
                 }
-                .padding(.top, 4)
+                .pickerStyle(.segmented)
+                .frame(width: 240)
             }
-            .padding()
-            
-            Divider()
-            
-            // List section with expandable rows
-            List(dailyData) { item in
-                DayRow(
-                    item: item,
-                    isExpanded: expandedDays.contains(item.dateString),
-                    displayFormatter: displayFormatter,
-                    onToggle: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            if expandedDays.contains(item.dateString) {
-                                expandedDays.remove(item.dateString)
-                            } else {
-                                expandedDays.insert(item.dateString)
-                            }
-                        }
-                    }
-                )
+            .padding([.horizontal, .top])
+            .padding(.bottom, 6)
+
+            if tab == 0 {
+                if viewMode == 0 {
+                    dailyContent
+                } else {
+                    KeysTimeseriesSection()
+                }
+            } else {
+                if viewMode == 0 {
+                    MouseDailySection()
+                } else {
+                    MouseTimeseriesSection()
+                }
             }
-            
+
             Divider()
-            
+
             // Footer
             HStack {
                 Spacer()
@@ -488,7 +461,7 @@ struct HistoryView: View {
                 .padding()
             }
         }
-        .frame(width: 540, height: 550)
+        .frame(width: 540, height: 600)
         .onAppear {
             updateCachedTopApps()
         }
@@ -497,6 +470,70 @@ struct HistoryView: View {
         }
         .onReceive(dataStore.$syncData) { _ in
             updateCachedTopApps()
+        }
+    }
+
+    @ViewBuilder
+    private var dailyContent: some View {
+        // Chart section
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Keystroke History")
+                    .font(.headline)
+                Spacer()
+                Picker("", selection: $selectedDays) {
+                    Text("7 days").tag(7)
+                    Text("30 days").tag(30)
+                    Text("60 days").tag(60)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 200)
+            }
+
+            // Stacked bar chart (isolated to prevent flicker on row expand)
+            EquatableView(content: ChartSection(chartData: chartData, selectedDays: selectedDays))
+
+            // Legend with toggle filtering (uses cached top apps)
+            HStack(spacing: 16) {
+                ForEach(cachedTopApps, id: \.bundleID) { app in
+                    LegendItem(
+                        bundleID: app.bundleID,
+                        displayName: getAppDisplayName(for: app.bundleID),
+                        color: app.color,
+                        count: app.count,
+                        isHidden: hiddenApps.contains(app.bundleID)
+                    ) {
+                        if hiddenApps.contains(app.bundleID) {
+                            hiddenApps.remove(app.bundleID)
+                        } else {
+                            hiddenApps.insert(app.bundleID)
+                        }
+                    }
+                }
+                Spacer()
+            }
+            .padding(.top, 4)
+        }
+        .padding()
+
+        Divider()
+
+        // List section with expandable rows
+        List(dailyData) { item in
+            DayRow(
+                item: item,
+                isExpanded: expandedDays.contains(item.dateString),
+                displayFormatter: displayFormatter,
+                onToggle: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        if expandedDays.contains(item.dateString) {
+                            expandedDays.remove(item.dateString)
+                        } else {
+                            expandedDays.insert(item.dateString)
+                        }
+                    }
+                }
+            )
         }
     }
 
@@ -615,7 +652,7 @@ class HistoryWindowController: NSWindowController, NSWindowDelegate {
         let store = HistoryDataStore(syncData: syncData, dataFileURL: dataFileURL)
         let hostingController = NSHostingController(rootView: HistoryView(dataStore: store))
         let window = NSWindow(contentViewController: hostingController)
-        window.title = "Typing Stats History"
+        window.title = isDevBuild ? "Input Stats History (Dev)" : "Input Stats History"
         window.styleMask = [.titled, .closable, .resizable]
         window.minSize = NSSize(width: 420, height: 450)
         
@@ -651,5 +688,506 @@ class HistoryWindowController: NSWindowController, NSWindowDelegate {
         }
         refreshTimer?.invalidate()
         refreshTimer = nil
+    }
+}
+
+// MARK: - Timeseries (high-resolution drilldown)
+
+extension EventKind {
+    var color: Color {
+        switch self {
+        case .key: return .blue
+        case .click: return .green
+        case .scroll: return .orange
+        case .move: return .pink
+        }
+    }
+}
+
+/// A selectable time window for the drilldown chart.
+enum TimeSpan: Int, CaseIterable, Identifiable {
+    case hour1, hour6, day1, day7, day30
+
+    var id: Int { rawValue }
+
+    var seconds: Int {
+        switch self {
+        case .hour1: return 3600
+        case .hour6: return 6 * 3600
+        case .day1: return 86400
+        case .day7: return 7 * 86400
+        case .day30: return 30 * 86400
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .hour1: return "1h"
+        case .hour6: return "6h"
+        case .day1: return "24h"
+        case .day7: return "7d"
+        case .day30: return "30d"
+        }
+    }
+
+    /// Resolutions offered for this span, finest first. Gated so a chart never exceeds ~720 points
+    /// (so you can't, e.g., ask for 5s blocks over a week and kill the machine).
+    var allowedResolutions: [Int] {
+        let candidates = [5, 60, 300, 3600, 21600, 86400]
+        let maxPoints = 720
+        let minPoints = 6
+        return candidates.filter { res in
+            let points = seconds / res
+            return points >= minPoints && points <= maxPoints
+        }
+    }
+
+    var defaultResolution: Int { allowedResolutions.first ?? 3600 }
+}
+
+func resolutionLabel(_ seconds: Int) -> String {
+    switch seconds {
+    case 5: return "5s"
+    case 60: return "1m"
+    case 300: return "5m"
+    case 3600: return "1h"
+    case 21600: return "6h"
+    case 86400: return "1d"
+    default:
+        if seconds % 3600 == 0 { return "\(seconds / 3600)h" }
+        if seconds % 60 == 0 { return "\(seconds / 60)m" }
+        return "\(seconds)s"
+    }
+}
+
+
+// MARK: - Shared timeseries helpers
+
+/// A single charted point for a labelled series (used for both per-app and per-kind charts).
+struct ChartLinePoint: Identifiable {
+    let id = UUID()
+    let date: Date
+    let label: String
+    let value: Int
+}
+
+/// Span + drilldown-resolution pickers, shared by the timeseries views.
+struct SpanResolutionControls: View {
+    @Binding var span: TimeSpan
+    @Binding var resolution: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Picker("", selection: $span) {
+                    ForEach(TimeSpan.allCases) { s in Text(s.label).tag(s) }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 230)
+                Spacer()
+                Text(resolutionLabel(resolution) + " blocks")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            HStack(spacing: 6) {
+                Text("Resolution")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Picker("", selection: $resolution) {
+                    ForEach(span.allowedResolutions, id: \.self) { res in
+                        Text(resolutionLabel(res)).tag(res)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 230)
+                Spacer()
+            }
+        }
+    }
+}
+
+struct TimeseriesPlaceholder: View {
+    let text: String
+    var height: CGFloat = 200
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.06))
+            Text(text).font(.caption).foregroundColor(.secondary)
+        }
+        .frame(height: height)
+    }
+}
+
+/// X-axis labels: time-of-day for intraday spans, month/day for multi-day spans.
+private func axisLabelFormat(for span: TimeSpan) -> Date.FormatStyle {
+    span.seconds <= 86400 ? .dateTime.hour().minute() : .dateTime.month().day()
+}
+
+/// Compact axis/legend number ("1.2k", "3.4M").
+func compactNumber(_ count: Int) -> String {
+    if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }
+    if count >= 1000 { return String(format: "%.1fk", Double(count) / 1000) }
+    return "\(count)"
+}
+
+/// Manual legend for the dual-axis clicks(left)/scroll(right) charts.
+struct DualAxisLegend: View {
+    var body: some View {
+        HStack(spacing: 14) {
+            HStack(spacing: 4) {
+                Circle().fill(EventKind.click.color).frame(width: 9, height: 9)
+                Text("Clicks (left)").font(.caption).foregroundColor(.secondary)
+            }
+            HStack(spacing: 4) {
+                Circle().fill(EventKind.scroll.color).frame(width: 9, height: 9)
+                Text("Scroll (right)").font(.caption).foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+    }
+}
+
+/// Dual y-axis: leading shows real clicks values, trailing maps scaled positions back to scroll values.
+@AxisContentBuilder
+func dualAxisMarks(factor: Double) -> some AxisContent {
+    AxisMarks(position: .leading) { value in
+        AxisGridLine()
+        AxisValueLabel {
+            if let d = value.as(Double.self) { Text(compactNumber(Int(d.rounded()))) }
+        }
+    }
+    AxisMarks(position: .trailing) { value in
+        AxisValueLabel {
+            if let d = value.as(Double.self), factor > 0 {
+                Text(compactNumber(Int((d / factor).rounded())))
+            }
+        }
+    }
+}
+
+// MARK: - Keys › Timeseries (per-app lines)
+
+struct KeysTimeseriesSection: View {
+    @State private var span: TimeSpan = .day1
+    @State private var resolution: Int = TimeSpan.day1.defaultResolution
+    @State private var points: [ChartLinePoint] = []
+    @State private var domain: [String] = []
+    @State private var range: [Color] = []
+    @State private var refreshTimer: Timer?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Keys over time").font(.headline)
+                Spacer()
+                Text("This Mac").font(.caption).foregroundColor(.secondary)
+            }
+            SpanResolutionControls(span: $span, resolution: $resolution)
+
+            if points.isEmpty {
+                TimeseriesPlaceholder(text: "No keystrokes in this window")
+            } else {
+                Chart {
+                    ForEach(points) { p in
+                        LineMark(x: .value("Time", p.date), y: .value("Keys", p.value))
+                            .foregroundStyle(by: .value("App", p.label))
+                            .interpolationMethod(.monotone)
+                    }
+                }
+                .chartForegroundStyleScale(domain: domain, range: range)
+                .chartXAxis {
+                    AxisMarks { _ in
+                        AxisGridLine()
+                        AxisValueLabel(format: axisLabelFormat(for: span))
+                    }
+                }
+                .frame(height: 210)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding()
+        .onAppear { resolution = span.defaultResolution; reload(); startTimer() }
+        .onDisappear { refreshTimer?.invalidate() }
+        .onChange(of: span) { ns in
+            if !ns.allowedResolutions.contains(resolution) { resolution = ns.defaultResolution }
+            reload()
+        }
+        .onChange(of: resolution) { _ in reload() }
+    }
+
+    private func startTimer() {
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { _ in reload() }
+    }
+
+    private func reload() {
+        let end = EventStore.bucket() + EventStore.baseBucketSeconds
+        let start = end - span.seconds
+        EventStore.shared.topApps(kind: .key, startBucket: start, endBucket: end) { tops in
+            let top5 = Array(tops.prefix(5)).map { $0.app }
+            let topSet = Set(top5)
+            EventStore.shared.seriesByApp(kind: .key, startBucket: start, endBucket: end, resolution: resolution) { raw in
+                // Aggregate into top-5 apps + "others"
+                var agg: [String: [Date: Int]] = [:]
+                for p in raw {
+                    let key = topSet.contains(p.app) ? p.app : "others"
+                    agg[key, default: [:]][p.date, default: 0] += p.value
+                }
+                var dom: [String] = []
+                var rng: [Color] = []
+                var flat: [ChartLinePoint] = []
+                for (i, app) in top5.enumerated() where agg[app] != nil {
+                    let label = getAppDisplayName(for: app)
+                    dom.append(label); rng.append(AppColorManager.color(for: i))
+                    for (date, val) in agg[app]! { flat.append(ChartLinePoint(date: date, label: label, value: val)) }
+                }
+                if let others = agg["others"] {
+                    dom.append("Others"); rng.append(AppColorManager.othersColor)
+                    for (date, val) in others { flat.append(ChartLinePoint(date: date, label: "Others", value: val)) }
+                }
+                self.domain = dom
+                self.range = rng
+                self.points = flat.sorted { $0.date < $1.date }
+            }
+        }
+    }
+}
+
+// MARK: - Mouse › Timeseries (per-event-type lines + movement)
+
+struct MouseTimeseriesSection: View {
+    @State private var span: TimeSpan = .day1
+    @State private var resolution: Int = TimeSpan.day1.defaultResolution
+    @State private var countPoints: [EventStore.SeriesPoint] = []
+    @State private var movePoints: [EventStore.SeriesPoint] = []
+    @State private var refreshTimer: Timer?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Mouse over time").font(.headline)
+                Spacer()
+                Text("This Mac").font(.caption).foregroundColor(.secondary)
+            }
+            SpanResolutionControls(span: $span, resolution: $resolution)
+
+            if countPoints.isEmpty {
+                TimeseriesPlaceholder(text: "No clicks or scrolling in this window", height: 150)
+            } else {
+                let clickPts = countPoints.filter { $0.kind == .click }
+                let scrollPts = countPoints.filter { $0.kind == .scroll }
+                let maxClicks = max(1, clickPts.map { $0.value }.max() ?? 0)
+                let maxScroll = max(1, scrollPts.map { $0.value }.max() ?? 0)
+                let factor = Double(maxClicks) / Double(maxScroll)  // scale scroll into clicks range
+                Chart {
+                    ForEach(clickPts) { p in
+                        LineMark(x: .value("Time", p.date), y: .value("Clicks", Double(p.value)))
+                            .foregroundStyle(EventKind.click.color)
+                            .interpolationMethod(.monotone)
+                    }
+                    ForEach(scrollPts) { p in
+                        LineMark(x: .value("Time", p.date), y: .value("Scroll", Double(p.value) * factor))
+                            .foregroundStyle(EventKind.scroll.color)
+                            .interpolationMethod(.monotone)
+                    }
+                }
+                .chartYScale(domain: 0...Double(maxClicks))
+                .chartYAxis { dualAxisMarks(factor: factor) }
+                .chartXAxis {
+                    AxisMarks { _ in
+                        AxisGridLine()
+                        AxisValueLabel(format: axisLabelFormat(for: span))
+                    }
+                }
+                .frame(height: 150)
+                DualAxisLegend()
+            }
+
+            Text("Pointer movement (px)").font(.caption).foregroundColor(.secondary)
+            if movePoints.isEmpty {
+                TimeseriesPlaceholder(text: "No movement in this window", height: 90)
+            } else {
+                Chart {
+                    ForEach(movePoints) { p in
+                        AreaMark(x: .value("Time", p.date), y: .value("Pixels", p.value))
+                            .foregroundStyle(EventKind.move.color.opacity(0.5))
+                    }
+                }
+                .chartXAxis {
+                    AxisMarks { _ in
+                        AxisGridLine()
+                        AxisValueLabel(format: axisLabelFormat(for: span))
+                    }
+                }
+                .frame(height: 90)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding()
+        .onAppear { resolution = span.defaultResolution; reload(); startTimer() }
+        .onDisappear { refreshTimer?.invalidate() }
+        .onChange(of: span) { ns in
+            if !ns.allowedResolutions.contains(resolution) { resolution = ns.defaultResolution }
+            reload()
+        }
+        .onChange(of: resolution) { _ in reload() }
+    }
+
+    private func startTimer() {
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { _ in reload() }
+    }
+
+    private func reload() {
+        let end = EventStore.bucket() + EventStore.baseBucketSeconds
+        let start = end - span.seconds
+        EventStore.shared.series(startBucket: start, endBucket: end, resolution: resolution,
+                                 kinds: [.click, .scroll]) { self.countPoints = $0 }
+        EventStore.shared.series(startBucket: start, endBucket: end, resolution: resolution,
+                                 kinds: [.move]) { self.movePoints = $0 }
+    }
+}
+
+// MARK: - Mouse › Daily (stacked bars by event type + movement + list)
+
+private struct MouseDay: Identifiable {
+    let id: String
+    let date: Date
+    let clicks: Int
+    let scroll: Int
+    let move: Int
+}
+
+struct MouseDailySection: View {
+    @State private var dayRange = 7
+    @State private var clickDays: [ChartLinePoint] = []
+    @State private var scrollDays: [ChartLinePoint] = []
+    @State private var movePoints: [ChartLinePoint] = []
+    @State private var days: [MouseDay] = []
+    @State private var refreshTimer: Timer?
+
+    private let listFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MMM d, yyyy"; return f
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Mouse Activity").font(.headline)
+                Text("This Mac").font(.caption).foregroundColor(.secondary)
+                Spacer()
+                Picker("", selection: $dayRange) {
+                    Text("7 days").tag(7)
+                    Text("30 days").tag(30)
+                    Text("60 days").tag(60)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 200)
+            }
+
+            if clickDays.isEmpty && scrollDays.isEmpty {
+                TimeseriesPlaceholder(text: "No clicks or scrolling yet", height: 150)
+            } else {
+                let maxClicks = max(1, clickDays.map { $0.value }.max() ?? 0)
+                let maxScroll = max(1, scrollDays.map { $0.value }.max() ?? 0)
+                let factor = Double(maxClicks) / Double(maxScroll)  // scale scroll into clicks range
+                Chart {
+                    ForEach(clickDays) { p in
+                        BarMark(x: .value("Date", p.date, unit: .day), y: .value("Clicks", Double(p.value)))
+                            .foregroundStyle(EventKind.click.color)
+                    }
+                    ForEach(scrollDays) { p in
+                        LineMark(x: .value("Date", p.date), y: .value("Scroll", Double(p.value) * factor))
+                            .foregroundStyle(EventKind.scroll.color)
+                            .symbol(.circle)
+                    }
+                }
+                .chartYScale(domain: 0...Double(maxClicks))
+                .chartYAxis { dualAxisMarks(factor: factor) }
+                .frame(height: 150)
+                DualAxisLegend()
+            }
+
+            Text("Pointer movement (px)").font(.caption).foregroundColor(.secondary)
+            if movePoints.isEmpty {
+                TimeseriesPlaceholder(text: "No movement yet", height: 80)
+            } else {
+                Chart {
+                    ForEach(movePoints) { p in
+                        BarMark(x: .value("Date", p.date, unit: .day), y: .value("Pixels", p.value))
+                            .foregroundStyle(EventKind.move.color.opacity(0.6))
+                    }
+                }
+                .frame(height: 80)
+            }
+
+            Divider()
+
+            List(days) { day in
+                HStack {
+                    Text(listFormatter.string(from: day.date))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("\(formatNumber(day.clicks)) clicks")
+                        .font(.callout).monospacedDigit().foregroundColor(.secondary)
+                        .frame(width: 120, alignment: .trailing)
+                    Text("\(formatNumber(day.scroll)) scroll")
+                        .font(.callout).monospacedDigit().foregroundColor(.secondary)
+                        .frame(width: 110, alignment: .trailing)
+                }
+            }
+            .frame(minHeight: 120)
+        }
+        .padding()
+        .onAppear { reload(); startTimer() }
+        .onDisappear { refreshTimer?.invalidate() }
+        .onChange(of: dayRange) { _ in reload() }
+    }
+
+    private func startTimer() {
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { _ in reload() }
+    }
+
+    private func reload() {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        guard let startDay = cal.date(byAdding: .day, value: -(dayRange - 1), to: today) else { return }
+        let start = EventStore.bucket(for: startDay)
+        let end = EventStore.bucket() + EventStore.baseBucketSeconds
+
+        // Query hourly and fold into local days (avoids UTC-day misalignment of 86400s buckets).
+        EventStore.shared.series(startBucket: start, endBucket: end, resolution: 3600,
+                                 kinds: [.click, .scroll, .move]) { pts in
+            var perDay: [Date: [EventKind: Int]] = [:]
+            for p in pts {
+                let day = cal.startOfDay(for: p.date)
+                perDay[day, default: [:]][p.kind, default: 0] += p.value
+            }
+
+            var clicksOut: [ChartLinePoint] = []
+            var scrollOut: [ChartLinePoint] = []
+            var moves: [ChartLinePoint] = []
+            var rows: [MouseDay] = []
+            let dateKey = DateFormatter(); dateKey.dateFormat = "yyyy-MM-dd"
+
+            for offset in 0..<dayRange {
+                guard let day = cal.date(byAdding: .day, value: -offset, to: today) else { continue }
+                let kinds = perDay[day] ?? [:]
+                let clicks = kinds[.click] ?? 0
+                let scroll = kinds[.scroll] ?? 0
+                let move = kinds[.move] ?? 0
+                if clicks > 0 { clicksOut.append(ChartLinePoint(date: day, label: EventKind.click.label, value: clicks)) }
+                if scroll > 0 { scrollOut.append(ChartLinePoint(date: day, label: EventKind.scroll.label, value: scroll)) }
+                if move > 0 { moves.append(ChartLinePoint(date: day, label: EventKind.move.label, value: move)) }
+                rows.append(MouseDay(id: dateKey.string(from: day), date: day, clicks: clicks, scroll: scroll, move: move))
+            }
+
+            self.clickDays = clicksOut
+            self.scrollDays = scrollOut
+            self.movePoints = moves
+            self.days = rows
+        }
+    }
+
+    private func formatNumber(_ count: Int) -> String {
+        let f = NumberFormatter(); f.numberStyle = .decimal
+        return f.string(from: NSNumber(value: count)) ?? "\(count)"
     }
 }

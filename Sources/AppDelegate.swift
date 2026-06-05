@@ -20,6 +20,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var updateChecker = UpdateChecker.shared
     private var updateDotLayer: CALayer?
 
+    // High-resolution local timeseries (keys + mouse/trackpad). Local-only, never synced.
+    private let eventStore = EventStore.shared
+    private var currentBucket: Int = 0
+    private var bucketAccum: [EventStore.BucketKey: Int] = [:]
+    private var bucketFlushTimer: Timer?
+    // Cached frontmost app bundle ID, refreshed on app-activation (avoids per-event lookups).
+    private var currentAppBundleID: String = "unknown"
+
     private let deviceID: String = {
         let defaults = UserDefaults.standard
         let key = "deviceUUID"
@@ -75,6 +83,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         startSyncTimer()
         startFileMonitor()
+        startFrontmostAppTracking()
         _ = updateChecker // Initialize Sparkle
 
         // Listen for update availability
@@ -117,6 +126,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fileMonitor?.cancel()
         syncTimer?.invalidate()
         permissionCheckTimer?.invalidate()
+        bucketFlushTimer?.invalidate()
+
+        // Flush any pending high-res accumulations before exit.
+        if !bucketAccum.isEmpty {
+            eventStore.record(bucket: currentBucket, counts: bucketAccum)
+            bucketAccum.removeAll()
+        }
+        eventStore.flushAndWait()
 
         checkDayChange()
         saveLocalCount()
@@ -618,22 +635,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         theMenu.addItem(NSMenuItem.separator())
 
-        if let version = updateChecker.availableVersion {
-            theMenu.addItem(NSMenuItem(
-                title: "Install Update (v\(version))...",
-                action: #selector(checkForUpdates),
-                keyEquivalent: ""
-            ))
-        } else {
-            theMenu.addItem(NSMenuItem(
-                title: "Check for Updates...",
-                action: #selector(checkForUpdates),
-                keyEquivalent: ""
-            ))
-        }
-
         theMenu.addItem(NSMenuItem(
-            title: "About Typing Stats",
+            title: "About Input Stats",
             action: #selector(showAbout),
             keyEquivalent: ""
         ))
@@ -683,7 +686,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateMenuBarTitle() {
-        let title = formatCount(totalKeystrokeCount)
+        let title = formatCount(totalKeystrokeCount) + (isDevBuild ? " (dev)" : "")
 
         DispatchQueue.main.async {
             guard let button = self.statusItem?.button else { return }
@@ -801,11 +804,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    @objc private func checkForUpdates() {
-        updateChecker.checkForUpdates()
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
     @objc private func quit() {
         NSApp.terminate(nil)
     }
@@ -813,17 +811,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Keystroke Monitoring
 
     private func startMonitoring() {
-        let eventMask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
+        let eventMask: CGEventMask =
+            (1 << CGEventType.keyDown.rawValue) |
+            (1 << CGEventType.leftMouseDown.rawValue) |
+            (1 << CGEventType.rightMouseDown.rawValue) |
+            (1 << CGEventType.otherMouseDown.rawValue) |
+            (1 << CGEventType.scrollWheel.rawValue) |
+            (1 << CGEventType.mouseMoved.rawValue) |
+            (1 << CGEventType.leftMouseDragged.rawValue) |
+            (1 << CGEventType.rightMouseDragged.rawValue) |
+            (1 << CGEventType.otherMouseDragged.rawValue)
 
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: eventMask,
-            callback: { (_, _, event, refcon) -> Unmanaged<CGEvent>? in
+            callback: { (_, type, event, refcon) -> Unmanaged<CGEvent>? in
                 if let refcon = refcon {
                     let appDelegate = Unmanaged<AppDelegate>.fromOpaque(refcon).takeUnretainedValue()
-                    appDelegate.handleKeyEvent()
+                    appDelegate.handleTapEvent(type: type, event: event)
                 }
                 return Unmanaged.passRetained(event)
             },
@@ -836,14 +843,78 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+
+        currentBucket = EventStore.bucket()
+
+        // Flush idle-tail accumulations even when no events arrive to roll the bucket over.
+        bucketFlushTimer = Timer.scheduledTimer(withTimeInterval: Double(EventStore.baseBucketSeconds), repeats: true) { [weak self] _ in
+            self?.rolloverBucketIfNeeded()
+        }
+    }
+
+    // MARK: - High-Resolution Event Accumulation
+
+    private func startFrontmostAppTracking() {
+        currentAppBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            self?.currentAppBundleID = app?.bundleIdentifier ?? "unknown"
+        }
+    }
+
+    /// Flush the previous bucket's accumulations once wall-clock crosses into a new 5s bucket.
+    private func rolloverBucketIfNeeded() {
+        let b = EventStore.bucket()
+        guard b != currentBucket else { return }
+        if !bucketAccum.isEmpty {
+            eventStore.record(bucket: currentBucket, counts: bucketAccum)
+            bucketAccum.removeAll(keepingCapacity: true)
+        }
+        currentBucket = b
+    }
+
+    /// Add `amount` of `kind` (count, or pixels for `.move`) to the current bucket for the frontmost app.
+    private func accumulate(_ kind: EventKind, amount: Int) {
+        guard amount != 0 else { return }
+        rolloverBucketIfNeeded()
+        let key = EventStore.BucketKey(kind: kind.rawValue, app: currentAppBundleID)
+        bucketAccum[key, default: 0] += amount
+    }
+
+    /// Routes a tap event to keystroke counting and/or the high-res store. Runs on the main run loop.
+    func handleTapEvent(type: CGEventType, event: CGEvent) {
+        switch type {
+        case .keyDown:
+            handleKeyEvent()
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            accumulate(.click, amount: 1)
+        case .scrollWheel:
+            accumulate(.scroll, amount: 1)
+        case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+            let dx = event.getDoubleValueField(.mouseEventDeltaX)
+            let dy = event.getDoubleValueField(.mouseEventDeltaY)
+            let dist = Int((dx * dx + dy * dy).squareRoot().rounded())
+            accumulate(.move, amount: dist)
+        case .tapDisabledByTimeout, .tapDisabledByUserInput:
+            if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
+        default:
+            break
+        }
     }
 
     func handleKeyEvent() {
         checkDayChange()
 
         // Track which app received this keystroke
-        let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
+        let bundleID = currentAppBundleID
         localAppCounts[bundleID, default: 0] += 1
+
+        // High-res timeseries (local-only)
+        accumulate(.key, amount: 1)
 
         localKeystrokeCount += 1
         totalKeystrokeCount += 1

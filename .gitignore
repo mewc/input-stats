@@ -1,8 +1,8 @@
-TypingStats.app
-TypingStats.zip
+InputStats.zip
 .build
 AppIcon.iconset/
 icon_macos.png
-Typing Stats.app
-Typing Stats (Dev).app
-TypingStats.app
+Input Stats.app
+Input Stats (Dev).app
+
+*.sh
