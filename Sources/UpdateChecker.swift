@@ -18,20 +18,21 @@ class UpdateChecker: NSObject, SPUUpdaterDelegate {
 
     private override init() {
         super.init()
+        // Auto-update is disabled for this fork (downloads-only distribution). We construct the
+        // controller without starting the updater so nothing checks a feed or shows error dialogs.
         updaterController = SPUStandardUpdaterController(
-            startingUpdater: true,
+            startingUpdater: false,
             updaterDelegate: self,
             userDriverDelegate: nil
         )
     }
 
     func checkForUpdates() {
-        updater.checkForUpdates()
+        // No-op: this fork ships via direct GitHub Release downloads, not Sparkle.
     }
 
     func installUpdate() {
-        // Trigger background update which will auto-install with SUAutomaticallyUpdate=true
-        updater.checkForUpdatesInBackground()
+        // No-op: see checkForUpdates().
     }
 
     // MARK: - SPUUpdaterDelegate

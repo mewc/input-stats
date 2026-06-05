@@ -635,20 +635,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         theMenu.addItem(NSMenuItem.separator())
 
-        if let version = updateChecker.availableVersion {
-            theMenu.addItem(NSMenuItem(
-                title: "Install Update (v\(version))...",
-                action: #selector(checkForUpdates),
-                keyEquivalent: ""
-            ))
-        } else {
-            theMenu.addItem(NSMenuItem(
-                title: "Check for Updates...",
-                action: #selector(checkForUpdates),
-                keyEquivalent: ""
-            ))
-        }
-
         theMenu.addItem(NSMenuItem(
             title: "About Input Stats",
             action: #selector(showAbout),
@@ -815,11 +801,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             aboutWindowController = AboutWindowController(updateChecker: updateChecker)
         }
         aboutWindowController?.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @objc private func checkForUpdates() {
-        updateChecker.checkForUpdates()
         NSApp.activate(ignoringOtherApps: true)
     }
 
