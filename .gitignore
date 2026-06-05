@@ -4,3 +4,5 @@ AppIcon.iconset/
 icon_macos.png
 Input Stats.app
 Input Stats (Dev).app
+
+*.sh
