@@ -823,6 +823,19 @@ private func axisLabelFormat(for span: TimeSpan) -> Date.FormatStyle {
     span.seconds <= 86400 ? .dateTime.hour().minute() : .dateTime.month().day()
 }
 
+/// Emit a point for EVERY bucket in [start, end) (0 where there's no data), so line/area
+/// charts drop to zero during inactivity instead of drawing a straight line across the gap.
+func denseSeries(label: String, byBucket: [Int: Int], start: Int, end: Int, resolution: Int) -> [ChartLinePoint] {
+    var out: [ChartLinePoint] = []
+    var b = (start / resolution) * resolution
+    while b < end {
+        out.append(ChartLinePoint(date: Date(timeIntervalSince1970: TimeInterval(b)),
+                                  label: label, value: byBucket[b] ?? 0))
+        b += resolution
+    }
+    return out
+}
+
 /// Compact axis/legend number ("1.2k", "3.4M").
 func compactNumber(_ count: Int) -> String {
     if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }
@@ -922,15 +935,16 @@ struct KeysTimeseriesSection: View {
     private func reload() {
         let end = EventStore.bucket() + EventStore.baseBucketSeconds
         let start = end - span.seconds
+        let res = resolution
         EventStore.shared.topApps(kind: .key, startBucket: start, endBucket: end) { tops in
             let top5 = Array(tops.prefix(5)).map { $0.app }
             let topSet = Set(top5)
-            EventStore.shared.seriesByApp(kind: .key, startBucket: start, endBucket: end, resolution: resolution) { raw in
-                // Aggregate into top-5 apps + "others"
-                var agg: [String: [Date: Int]] = [:]
+            EventStore.shared.seriesByApp(kind: .key, startBucket: start, endBucket: end, resolution: res) { raw in
+                // Aggregate into top-5 apps + "others", keyed by bucket epoch.
+                var agg: [String: [Int: Int]] = [:]
                 for p in raw {
                     let key = topSet.contains(p.app) ? p.app : "others"
-                    agg[key, default: [:]][p.date, default: 0] += p.value
+                    agg[key, default: [:]][Int(p.date.timeIntervalSince1970), default: 0] += p.value
                 }
                 var dom: [String] = []
                 var rng: [Color] = []
@@ -938,15 +952,16 @@ struct KeysTimeseriesSection: View {
                 for (i, app) in top5.enumerated() where agg[app] != nil {
                     let label = getAppDisplayName(for: app)
                     dom.append(label); rng.append(AppColorManager.color(for: i))
-                    for (date, val) in agg[app]! { flat.append(ChartLinePoint(date: date, label: label, value: val)) }
+                    // Zero-fill so each app's line drops to 0 during inactivity instead of bridging.
+                    flat += denseSeries(label: label, byBucket: agg[app]!, start: start, end: end, resolution: res)
                 }
                 if let others = agg["others"] {
                     dom.append("Others"); rng.append(AppColorManager.othersColor)
-                    for (date, val) in others { flat.append(ChartLinePoint(date: date, label: "Others", value: val)) }
+                    flat += denseSeries(label: "Others", byBucket: others, start: start, end: end, resolution: res)
                 }
                 self.domain = dom
                 self.range = rng
-                self.points = flat.sorted { $0.date < $1.date }
+                self.points = flat
             }
         }
     }
@@ -957,9 +972,15 @@ struct KeysTimeseriesSection: View {
 struct MouseTimeseriesSection: View {
     @State private var span: TimeSpan = .day1
     @State private var resolution: Int = TimeSpan.day1.defaultResolution
-    @State private var countPoints: [EventStore.SeriesPoint] = []
-    @State private var movePoints: [EventStore.SeriesPoint] = []
+    @State private var clickPts: [ChartLinePoint] = []   // dense (0-filled)
+    @State private var scrollPts: [ChartLinePoint] = []  // dense (0-filled)
+    @State private var movePts: [ChartLinePoint] = []    // dense (0-filled)
     @State private var refreshTimer: Timer?
+
+    private var hasCounts: Bool {
+        clickPts.contains { $0.value > 0 } || scrollPts.contains { $0.value > 0 }
+    }
+    private var hasMove: Bool { movePts.contains { $0.value > 0 } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -970,11 +991,9 @@ struct MouseTimeseriesSection: View {
             }
             SpanResolutionControls(span: $span, resolution: $resolution)
 
-            if countPoints.isEmpty {
+            if !hasCounts {
                 TimeseriesPlaceholder(text: "No clicks or scrolling in this window", height: 150)
             } else {
-                let clickPts = countPoints.filter { $0.kind == .click }
-                let scrollPts = countPoints.filter { $0.kind == .scroll }
                 let maxClicks = max(1, clickPts.map { $0.value }.max() ?? 0)
                 let maxScroll = max(1, scrollPts.map { $0.value }.max() ?? 0)
                 let factor = Double(maxClicks) / Double(maxScroll)  // scale scroll into clicks range
@@ -1003,11 +1022,11 @@ struct MouseTimeseriesSection: View {
             }
 
             Text("Pointer movement (px)").font(.caption).foregroundColor(.secondary)
-            if movePoints.isEmpty {
+            if !hasMove {
                 TimeseriesPlaceholder(text: "No movement in this window", height: 90)
             } else {
                 Chart {
-                    ForEach(movePoints) { p in
+                    ForEach(movePts) { p in
                         AreaMark(x: .value("Time", p.date), y: .value("Pixels", p.value))
                             .foregroundStyle(EventKind.move.color.opacity(0.5))
                     }
@@ -1039,10 +1058,24 @@ struct MouseTimeseriesSection: View {
     private func reload() {
         let end = EventStore.bucket() + EventStore.baseBucketSeconds
         let start = end - span.seconds
-        EventStore.shared.series(startBucket: start, endBucket: end, resolution: resolution,
-                                 kinds: [.click, .scroll]) { self.countPoints = $0 }
-        EventStore.shared.series(startBucket: start, endBucket: end, resolution: resolution,
-                                 kinds: [.move]) { self.movePoints = $0 }
+        let res = resolution
+        EventStore.shared.series(startBucket: start, endBucket: end, resolution: res,
+                                 kinds: [.click, .scroll]) { pts in
+            var clickB: [Int: Int] = [:]
+            var scrollB: [Int: Int] = [:]
+            for p in pts {
+                let b = Int(p.date.timeIntervalSince1970)
+                if p.kind == .click { clickB[b] = p.value } else if p.kind == .scroll { scrollB[b] = p.value }
+            }
+            self.clickPts = denseSeries(label: "Clicks", byBucket: clickB, start: start, end: end, resolution: res)
+            self.scrollPts = denseSeries(label: "Scroll", byBucket: scrollB, start: start, end: end, resolution: res)
+        }
+        EventStore.shared.series(startBucket: start, endBucket: end, resolution: res,
+                                 kinds: [.move]) { pts in
+            var b: [Int: Int] = [:]
+            for p in pts { b[Int(p.date.timeIntervalSince1970)] = p.value }
+            self.movePts = denseSeries(label: "Movement", byBucket: b, start: start, end: end, resolution: res)
+        }
     }
 }
 
@@ -1173,9 +1206,10 @@ struct MouseDailySection: View {
                 let clicks = kinds[.click] ?? 0
                 let scroll = kinds[.scroll] ?? 0
                 let move = kinds[.move] ?? 0
-                if clicks > 0 { clicksOut.append(ChartLinePoint(date: day, label: EventKind.click.label, value: clicks)) }
-                if scroll > 0 { scrollOut.append(ChartLinePoint(date: day, label: EventKind.scroll.label, value: scroll)) }
-                if move > 0 { moves.append(ChartLinePoint(date: day, label: EventKind.move.label, value: move)) }
+                // Emit every day (incl. zeros) so the scroll line drops to 0 instead of bridging gaps.
+                clicksOut.append(ChartLinePoint(date: day, label: EventKind.click.label, value: clicks))
+                scrollOut.append(ChartLinePoint(date: day, label: EventKind.scroll.label, value: scroll))
+                moves.append(ChartLinePoint(date: day, label: EventKind.move.label, value: move))
                 rows.append(MouseDay(id: dateKey.string(from: day), date: day, clicks: clicks, scroll: scroll, move: move))
             }
 
