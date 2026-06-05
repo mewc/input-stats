@@ -6,3 +6,5 @@ Input Stats.app
 Input Stats (Dev).app
 
 *.sh
+!build.sh
+
