@@ -8,7 +8,7 @@
   - `./build.sh --release` - production build
 - **Build, deploy, and restart:**
   ```
-  ./build.sh && cp -r "Typing Stats.app" /Applications/ && killall "Typing Stats" 2>/dev/null; open "/Applications/Typing Stats.app"
+  ./build.sh && pkill -f "Input Stats.app" 2>/dev/null; rm -rf "/Applications/Input Stats.app" && cp -r "Input Stats.app" /Applications/ && open "/Applications/Input Stats.app"
   ```
 - **Dev iterate loop:** `./dev.sh` (build + install the Dev bundle + relaunch), or `./dev.sh --run` to run in the foreground and see `print()` output.
 - **RULE — rebuild after every code change:** whenever you change Swift source (or anything that affects the binary), you MUST run `./dev.sh` and confirm it compiles cleanly before reporting the task done. Never report a code change as complete without a successful build. If the build fails, fix it before stopping.

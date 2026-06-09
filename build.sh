@@ -44,7 +44,7 @@ mkdir -p "$BUNDLE_NAME/Contents/MacOS"
 mkdir -p "$BUNDLE_NAME/Contents/Resources"
 mkdir -p "$BUNDLE_NAME/Contents/Frameworks"
 
-cp "$BUILD_DIR/release/TypingStats" "$BUNDLE_NAME/Contents/MacOS/"
+cp "$BUILD_DIR/release/InputStats" "$BUNDLE_NAME/Contents/MacOS/"
 cp Info.plist "$BUNDLE_NAME/Contents/"
 if [ "$RELEASE_BUILD" != true ]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.mewc.input-stats.dev" "$BUNDLE_NAME/Contents/Info.plist"
@@ -58,7 +58,7 @@ SPARKLE_PATH=$(find "$BUILD_DIR" -name "Sparkle.framework" -type d | head -1)
 if [ -n "$SPARKLE_PATH" ]; then
     cp -a "$SPARKLE_PATH" "$BUNDLE_NAME/Contents/Frameworks/"
     # Fix rpath to find framework
-    install_name_tool -add_rpath "@executable_path/../Frameworks" "$BUNDLE_NAME/Contents/MacOS/TypingStats" 2>/dev/null || true
+    install_name_tool -add_rpath "@executable_path/../Frameworks" "$BUNDLE_NAME/Contents/MacOS/InputStats" 2>/dev/null || true
 fi
 
 # Code sign the app bundle

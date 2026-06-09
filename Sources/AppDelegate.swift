@@ -66,7 +66,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private let localDefaultsKey = "localKeystrokeData"
-    private let syncQueue = DispatchQueue(label: "com.typing-stats.sync", qos: .utility)
+    private let syncQueue = DispatchQueue(label: "com.input-stats.sync", qos: .utility)
     private let fileCoordinator = NSFileCoordinator()
 
     // MARK: - App Lifecycle

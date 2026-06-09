@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "TypingStats",
+    name: "InputStats",
     platforms: [
         .macOS(.v13)
     ],
@@ -11,7 +11,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "TypingStats",
+            name: "InputStats",
             dependencies: ["Sparkle"],
             path: "Sources"
         )

@@ -43,7 +43,7 @@ final class EventStore {
     private let retentionDays = 30
 
     private var db: OpaquePointer?
-    private let queue = DispatchQueue(label: "com.typing-stats.eventstore", qos: .utility)
+    private let queue = DispatchQueue(label: "com.input-stats.eventstore", qos: .utility)
 
     /// Identifies a per-bucket accumulation slot. Shared with AppDelegate's in-memory accumulator.
     struct BucketKey: Hashable {

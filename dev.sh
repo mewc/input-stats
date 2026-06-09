@@ -11,8 +11,8 @@ RUN_FOREGROUND=false
 
 # Use a stable self-signed identity if present so the Accessibility grant survives rebuilds.
 # Create it once: Keychain Access > Certificate Assistant > Create a Certificate,
-# name "TypingStats-Dev", Identity Type "Self Signed Root", Certificate Type "Code Signing".
-DEV_IDENTITY="TypingStats-Dev"
+# name "InputStats-Dev", Identity Type "Self Signed Root", Certificate Type "Code Signing".
+DEV_IDENTITY="InputStats-Dev"
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "$DEV_IDENTITY"; then
     export SIGNING_IDENTITY="$DEV_IDENTITY"
     echo "Signing with stable identity: $DEV_IDENTITY (Accessibility grant persists across rebuilds)"
@@ -24,14 +24,18 @@ fi
 ./build.sh
 
 BUNDLE="Input Stats (Dev).app"
-killall "Input Stats (Dev)" 2>/dev/null || true
+# Both dev and release share the executable name "InputStats", so target the dev
+# instance by its bundle path rather than process name (killall would hit both).
+pkill -f "Input Stats (Dev).app" 2>/dev/null || true
 
 if [ "$RUN_FOREGROUND" = true ]; then
     echo ""
     echo "Running in foreground — print() output appears below. Ctrl-C to stop."
     echo "------------------------------------------------------------------"
-    exec "$BUNDLE/Contents/MacOS/TypingStats"
+    exec "$BUNDLE/Contents/MacOS/InputStats"
 else
+    # rm first: cp -r merges into an existing bundle, which would leave stale binaries behind.
+    rm -rf "/Applications/$BUNDLE"
     cp -r "$BUNDLE" /Applications/
     open "/Applications/$BUNDLE"
     echo "Relaunched: /Applications/$BUNDLE"
