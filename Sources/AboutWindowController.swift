@@ -169,9 +169,7 @@ class AboutWindowController: NSWindowController {
         progressIndicator.startAnimation(nil)
         checkmarkIcon.isHidden = true
 
-        updateChecker.updater.checkForUpdatesInBackground()
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+        updateChecker.checkForUpdates { [weak self] in
             self?.updateCheckComplete()
         }
     }
@@ -182,6 +180,11 @@ class AboutWindowController: NSWindowController {
 
         if let version = updateChecker.availableVersion {
             updateStatusLabel.stringValue = "v\(version) available –"
+            let title = NSMutableAttributedString(string: "Download")
+            title.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: NSRange(location: 0, length: title.length))
+            title.addAttribute(.foregroundColor, value: NSColor.linkColor, range: NSRange(location: 0, length: title.length))
+            title.addAttribute(.font, value: NSFont.systemFont(ofSize: 11), range: NSRange(location: 0, length: title.length))
+            installButton.attributedTitle = title
             installButton.isHidden = false
             checkmarkIcon.isHidden = true
         } else {
@@ -192,8 +195,8 @@ class AboutWindowController: NSWindowController {
     }
 
     @objc private func installUpdate() {
-        updateChecker.installUpdate()
-        // Close the About window - update will install in background and relaunch
+        // Downloads-only distribution: open the GitHub release page to grab the new build.
+        updateChecker.openReleasePage()
         window?.close()
     }
 }

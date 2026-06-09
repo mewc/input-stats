@@ -19,6 +19,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // in-memory cache; disk syncs happen async
     private var cachedSyncData = SyncData()
     private var updateChecker = UpdateChecker.shared
+    private var updateCheckTimer: Timer?
     private var updateDotLayer: CALayer?
 
     // High-resolution local timeseries (keys + mouse/trackpad). Local-only, never synced.
@@ -91,15 +92,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startSyncTimer()
         startFileMonitor()
         startFrontmostAppTracking()
-        _ = updateChecker // Initialize Sparkle
-
-        // Listen for update availability
+        // Listen for update availability, then kick off the GitHub release check + periodic re-check.
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleUpdateAvailable),
             name: UpdateChecker.updateAvailableNotification,
             object: nil
         )
+        updateChecker.checkForUpdates()
+        updateCheckTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            self?.updateChecker.checkForUpdates()
+        }
 
         checkFirstRun()
     }
@@ -133,6 +136,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fileMonitor?.cancel()
         syncTimer?.invalidate()
         permissionCheckTimer?.invalidate()
+        updateCheckTimer?.invalidate()
         bucketFlushTimer?.invalidate()
 
         // Flush any pending high-res accumulations before exit.
@@ -643,6 +647,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Update blue dot visibility based on update availability
         setStatusItemUpdateBadgeVisible(updateChecker.updateAvailable)
 
+        if let newVersion = updateChecker.availableVersion {
+            let header = NSMenuItem(title: "Update available", action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            header.attributedTitle = NSAttributedString(
+                string: "Update available",
+                attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)]
+            )
+            theMenu.addItem(header)
+            theMenu.addItem(NSMenuItem(
+                title: "Download v\(newVersion)\u{2026}",
+                action: #selector(openReleasePage),
+                keyEquivalent: ""
+            ))
+            theMenu.addItem(NSMenuItem.separator())
+        }
+
         if !hasAccessibilityPermission {
             let permissionItem = NSMenuItem(
                 title: "\u{26A0}\u{FE0E} Grant Accessibility Permission",
@@ -887,6 +907,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         aboutWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openReleasePage() {
+        updateChecker.openReleasePage()
     }
 
     @objc private func quit() {
