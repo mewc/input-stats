@@ -6,6 +6,12 @@ A fork of [Typing Stats](https://github.com/rauchg/typing-stats) by Guillermo Ra
 mouse/trackpad tracking (clicks, scroll, pointer movement) and a high-resolution timeseries
 drilldown (down to 5-second blocks).
 
+Maintained by [mewc](https://mewc.info). For more, see [mewc.info](https://mewc.info)
+and [drummerduck.com](https://drummerduck.com).
+
+> **Privacy:** all input counts are stored locally on your Mac (SQLite + iCloud sync of your own
+> aggregate totals). Keystrokes themselves are never recorded — only per-app, per-interval counts.
+
 ## Install
 
 No notarized release / Homebrew cask — this is a personal public fork distributed as a direct download.
