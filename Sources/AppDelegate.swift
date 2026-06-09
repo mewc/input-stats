@@ -12,6 +12,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var runLoopSource: CFRunLoopSource?
     private var hasAccessibilityPermission = false
     private var permissionCheckTimer: Timer?
+    private var permissionCheckTicks = 0
     private var syncTimer: Timer?
     private var fileMonitor: DispatchSourceFileSystemObject?
     private var lastSyncTime: Date?
@@ -27,6 +28,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var bucketFlushTimer: Timer?
     // Cached frontmost app bundle ID, refreshed on app-activation (avoids per-event lookups).
     private var currentAppBundleID: String = "unknown"
+
+    // Per-day local totals for clicks and pointer movement (px), keyed by "yyyy-MM-dd".
+    // Refreshed async from EventStore when the menu opens; powers the menu's Clicks/Distance sections.
+    private var clickDaily: [String: Int] = [:]
+    private var moveDaily: [String: Int] = [:]
 
     private let deviceID: String = {
         let defaults = UserDefaults.standard
@@ -76,8 +82,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if hasAccessibilityPermission {
             startMonitoring()
         } else {
-            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
-            _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
+            // Don't prompt immediately: AXIsProcessTrusted() can read false during TCC warm-up
+            // even when the grant is valid. The timer re-checks and only prompts after a grace
+            // period if still untrusted, so an existing grant never triggers a false dialog/CTA.
             startPermissionCheckTimer()
         }
 
@@ -402,18 +409,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func startPermissionCheckTimer() {
+        permissionCheckTicks = 0
         permissionCheckTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            let nowHasPermission = AXIsProcessTrusted()
-            if nowHasPermission && !self.hasAccessibilityPermission {
-                self.hasAccessibilityPermission = true
-                self.permissionCheckTimer?.invalidate()
-                self.permissionCheckTimer = nil
-                self.startMonitoring()
-                self.rebuildMenu()
-                self.updateMenuBarTitle()
+            self.permissionCheckTicks += 1
+            if AXIsProcessTrusted() {
+                self.handlePermissionGranted()
+                return
+            }
+            // Give TCC a couple seconds to warm up before showing the system prompt, so a
+            // still-valid grant that briefly reads false at launch doesn't nag the user.
+            if self.permissionCheckTicks == 2 {
+                let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+                _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
             }
         }
+    }
+
+    /// Flip to the granted state once, then start monitoring and refresh the UI. Idempotent.
+    private func handlePermissionGranted() {
+        guard !hasAccessibilityPermission else { return }
+        hasAccessibilityPermission = true
+        permissionCheckTimer?.invalidate()
+        permissionCheckTimer = nil
+        startMonitoring()
+        rebuildMenu()
+        updateMenuBarTitle()
     }
 
     // MARK: - Helpers
@@ -461,17 +482,59 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return formatter.string(from: NSNumber(value: count)) ?? "\(count)"
     }
 
-    private func getStats() -> (today: Int, yesterday: Int, avg7: Double, avg30: Double, recordCount: Int, recordDate: String?) {
-        let today = todayString()
-        let yesterday = yesterdayString()
+    private struct SectionStats {
+        let today: Int
+        let yesterday: Int
+        let avg7: Double
+        let avg30: Double
+        let recordCount: Int
+        let recordDate: String?
+    }
 
-        let todayCount = cachedSyncData.totalCount(for: today)
-        let yesterdayCount = cachedSyncData.totalCount(for: yesterday)
-        let avg7 = cachedSyncData.averageCount(forLastDays: 7, from: Date())
-        let avg30 = cachedSyncData.averageCount(forLastDays: 30, from: Date())
-        let record = cachedSyncData.recordDay()
+    /// Cross-device keyboard totals per day, keyed by "yyyy-MM-dd".
+    private func keyboardDaily() -> [String: Int] {
+        var dates = Set<String>()
+        for device in cachedSyncData.devices.values {
+            dates.formUnion(device.dailyCounts.keys)
+        }
+        var result: [String: Int] = [:]
+        for date in dates {
+            result[date] = cachedSyncData.totalCount(for: date)
+        }
+        return result
+    }
 
-        return (todayCount, yesterdayCount, avg7, avg30, record?.count ?? 0, record?.date)
+    /// Compute the today / yesterday / 7-day / 30-day / record summary from a per-day total map.
+    /// Averages count only days with data, matching `SyncData.averageCount`.
+    private func computeSectionStats(daily: [String: Int]) -> SectionStats {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let calendar = Calendar.current
+
+        func avg(_ days: Int) -> Double {
+            var total = 0, n = 0
+            for i in 0..<days {
+                guard let d = calendar.date(byAdding: .day, value: -i, to: Date()) else { continue }
+                if let c = daily[formatter.string(from: d)], c > 0 { total += c; n += 1 }
+            }
+            return n > 0 ? Double(total) / Double(n) : 0
+        }
+
+        var recordCount = 0
+        var recordDate: String?
+        for (date, count) in daily where count > recordCount {
+            recordCount = count
+            recordDate = date
+        }
+
+        return SectionStats(
+            today: daily[todayString()] ?? 0,
+            yesterday: daily[yesterdayString()] ?? 0,
+            avg7: avg(7),
+            avg30: avg(30),
+            recordCount: recordCount,
+            recordDate: recordDate
+        )
     }
 
     private func formatDateShort(_ dateString: String) -> String {
@@ -590,29 +653,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             theMenu.addItem(NSMenuItem.separator())
         }
 
-        let stats = getStats()
-
-        let todayItem = NSMenuItem(title: "Today: \(formatCountFull(stats.today))", action: nil, keyEquivalent: "")
-        todayItem.isEnabled = false
-        theMenu.addItem(todayItem)
-
-        let yesterdayItem = NSMenuItem(title: "Yesterday: \(formatCountFull(stats.yesterday))", action: nil, keyEquivalent: "")
-        yesterdayItem.isEnabled = false
-        theMenu.addItem(yesterdayItem)
-
-        let avg7Item = NSMenuItem(title: "7-day avg: \(formatCountFull(Int(stats.avg7)))", action: nil, keyEquivalent: "")
-        avg7Item.isEnabled = false
-        theMenu.addItem(avg7Item)
-
-        let avg30Item = NSMenuItem(title: "30-day avg: \(formatCountFull(Int(stats.avg30)))", action: nil, keyEquivalent: "")
-        avg30Item.isEnabled = false
-        theMenu.addItem(avg30Item)
-
-        if let recordDate = stats.recordDate {
-            let recordItem = NSMenuItem(title: "Record: \(formatCountFull(stats.recordCount)) (\(formatDateShort(recordDate)))", action: nil, keyEquivalent: "")
-            recordItem.isEnabled = false
-            theMenu.addItem(recordItem)
-        }
+        addStatsSection(title: "Keyboard", daily: keyboardDaily(), distance: false)
+        theMenu.addItem(NSMenuItem.separator())
+        addStatsSection(title: "Clicks", daily: clickDaily, distance: false)
+        theMenu.addItem(NSMenuItem.separator())
+        addStatsSection(title: "Movement", daily: moveDaily, distance: true)
 
         theMenu.addItem(NSMenuItem.separator())
 
@@ -680,9 +725,49 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Render a bold section header followed by the today/yesterday/avg/record rows for `daily`.
+    /// `distance` formats values as pixels (pointer movement) rather than plain counts.
+    private func addStatsSection(title: String, daily: [String: Int], distance: Bool) {
+        let header = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        header.attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)]
+        )
+        theMenu.addItem(header)
+
+        let stats = computeSectionStats(daily: daily)
+        func fmt(_ n: Int) -> String { distance ? "\(formatCountFull(n)) px" : formatCountFull(n) }
+
+        func addRow(_ text: String) {
+            let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            theMenu.addItem(item)
+        }
+
+        addRow("Today: \(fmt(stats.today))")
+        addRow("Yesterday: \(fmt(stats.yesterday))")
+        addRow("7-day avg: \(fmt(Int(stats.avg7)))")
+        addRow("30-day avg: \(fmt(Int(stats.avg30)))")
+        if let recordDate = stats.recordDate {
+            addRow("Record: \(fmt(stats.recordCount)) (\(formatDateShort(recordDate)))")
+        }
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
         checkDayChange()
+        // Re-check live so a grant that read false at launch never leaves a stale CTA in the menu.
+        if !hasAccessibilityPermission && AXIsProcessTrusted() {
+            handlePermissionGranted()
+        }
         rebuildMenu()
+        // Clicks/Distance come from the local SQLite store; fetch async and re-render in place.
+        eventStore.dailyTotals(kinds: [.click, .move]) { [weak self] totals in
+            guard let self = self else { return }
+            self.clickDaily = totals[.click] ?? [:]
+            self.moveDaily = totals[.move] ?? [:]
+            self.rebuildMenu()
+        }
     }
 
     private func updateMenuBarTitle() {

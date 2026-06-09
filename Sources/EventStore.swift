@@ -292,6 +292,38 @@ final class EventStore {
         }
     }
 
+    /// Per-day totals for each requested kind, keyed by local "yyyy-MM-dd".
+    /// Mirrors the day bucketing used by the iCloud sync data so menu stats line up.
+    /// Completion delivered on the main queue.
+    func dailyTotals(kinds: [EventKind],
+                     completion: @escaping ([EventKind: [String: Int]]) -> Void) {
+        queue.async { [weak self] in
+            var result: [EventKind: [String: Int]] = [:]
+            if let db = self?.db, !kinds.isEmpty {
+                let kindList = kinds.map { String($0.rawValue) }.joined(separator: ",")
+                let sql = """
+                    SELECT strftime('%Y-%m-%d', bucket, 'unixepoch', 'localtime') AS day, kind, SUM(count)
+                    FROM events
+                    WHERE kind IN (\(kindList))
+                    GROUP BY day, kind;
+                    """
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                    while sqlite3_step(stmt) == SQLITE_ROW {
+                        let day = String(cString: sqlite3_column_text(stmt, 0))
+                        let kindRaw = Int(sqlite3_column_int(stmt, 1))
+                        let sum = Int(sqlite3_column_int64(stmt, 2))
+                        if let kind = EventKind(rawValue: kindRaw) {
+                            result[kind, default: [:]][day] = sum
+                        }
+                    }
+                }
+                sqlite3_finalize(stmt)
+            }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
     /// Total per kind over a time window (e.g. "today"). Completion delivered on the main queue.
     func totals(startBucket: Int,
                 endBucket: Int,

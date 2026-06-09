@@ -839,6 +839,67 @@ func compactNumber(_ count: Int) -> String {
     return "\(count)"
 }
 
+/// Full decimal-grouped number ("1,234,567") for tooltips.
+func fullNumber(_ count: Int) -> String {
+    let f = NumberFormatter(); f.numberStyle = .decimal
+    return f.string(from: NSNumber(value: count)) ?? "\(count)"
+}
+
+// MARK: - Shared hover tooltip
+
+/// Tracks continuous hover over a Chart and reports the x-resolved Date (nil when the pointer
+/// leaves) plus the local x position, for driving a tooltip. Mirrors the keystroke chart's hover.
+struct ChartDateHover: ViewModifier {
+    let onHover: (_ date: Date?, _ x: CGFloat) -> Void
+    func body(content: Content) -> some View {
+        content.chartOverlay { proxy in
+            GeometryReader { _ in
+                Rectangle()
+                    .fill(.clear)
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let loc):
+                            onHover(proxy.value(atX: loc.x), loc.x)
+                        case .ended:
+                            onHover(nil, 0)
+                        }
+                    }
+            }
+        }
+    }
+}
+
+extension View {
+    func chartDateHover(_ onHover: @escaping (_ date: Date?, _ x: CGFloat) -> Void) -> some View {
+        modifier(ChartDateHover(onHover: onHover))
+    }
+}
+
+/// A small floating tooltip: a title plus colored metric rows. Reused by the mouse charts.
+struct MetricTooltip: View {
+    let title: String
+    let rows: [(color: Color, label: String, value: String)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.system(size: 10, weight: .semibold))
+            ForEach(rows.indices, id: \.self) { i in
+                HStack(spacing: 4) {
+                    Circle().fill(rows[i].color).frame(width: 6, height: 6)
+                    Text(rows[i].label).font(.system(size: 9))
+                    Spacer()
+                    Text(rows[i].value).font(.system(size: 9, weight: .medium).monospacedDigit())
+                }
+            }
+        }
+        .padding(6)
+        .frame(width: 150)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+        .shadow(radius: 4)
+    }
+}
+
 /// Manual legend for the dual-axis clicks(left)/scroll(right) charts.
 struct DualAxisLegend: View {
     var body: some View {
@@ -965,18 +1026,60 @@ struct KeysTimeseriesSection: View {
 
 // MARK: - Mouse › Timeseries (per-event-type lines + movement)
 
+/// One bucket's clicks/scroll/movement, used for hover lookups in the timeseries charts.
+private struct TSMousePoint: Identifiable {
+    let id = UUID()
+    let date: Date
+    let clicks: Int
+    let scroll: Int
+    let move: Int
+}
+
 struct MouseTimeseriesSection: View {
     @State private var span: TimeSpan = .day1
     @State private var resolution: Int = TimeSpan.day1.defaultResolution
     @State private var clickPts: [ChartLinePoint] = []   // dense (0-filled)
     @State private var scrollPts: [ChartLinePoint] = []  // dense (0-filled)
     @State private var movePts: [ChartLinePoint] = []    // dense (0-filled)
+    @State private var tsPoints: [TSMousePoint] = []     // zipped, for hover lookups
     @State private var refreshTimer: Timer?
+    @State private var hoveredCounts: TSMousePoint?
+    @State private var hoveredCountsX: CGFloat = 0
+    @State private var hoveredMove: TSMousePoint?
+    @State private var hoveredMoveX: CGFloat = 0
 
     private var hasCounts: Bool {
         clickPts.contains { $0.value > 0 } || scrollPts.contains { $0.value > 0 }
     }
     private var hasMove: Bool { movePts.contains { $0.value > 0 } }
+
+    /// Rebuild the zipped hover-lookup points from the three dense series (identical date axes).
+    private func rebuildTSPoints() {
+        let n = min(clickPts.count, scrollPts.count, movePts.count)
+        tsPoints = (0..<n).map {
+            TSMousePoint(date: clickPts[$0].date, clicks: clickPts[$0].value,
+                         scroll: scrollPts[$0].value, move: movePts[$0].value)
+        }
+    }
+
+    private func nearest(to date: Date) -> TSMousePoint? {
+        let t = date.timeIntervalSince1970
+        return tsPoints.min {
+            abs($0.date.timeIntervalSince1970 - t) < abs($1.date.timeIntervalSince1970 - t)
+        }
+    }
+
+    private func tooltipTitle(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = span.seconds <= 86400 ? "HH:mm" : "MMM d, HH:mm"
+        return f.string(from: date)
+    }
+
+    private func tooltipRows(_ p: TSMousePoint) -> [(color: Color, label: String, value: String)] {
+        [(EventKind.click.color, "Clicks", fullNumber(p.clicks)),
+         (EventKind.scroll.color, "Scroll", fullNumber(p.scroll)),
+         (EventKind.move.color, "Movement", "\(fullNumber(p.move)) px")]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1004,6 +1107,10 @@ struct MouseTimeseriesSection: View {
                             .foregroundStyle(EventKind.scroll.color)
                             .interpolationMethod(.monotone)
                     }
+                    if let h = hoveredCounts {
+                        RuleMark(x: .value("Time", h.date))
+                            .foregroundStyle(.gray.opacity(0.3))
+                    }
                 }
                 .chartYScale(domain: 0...Double(maxClicks))
                 .chartYAxis { dualAxisMarks(factor: factor) }
@@ -1014,6 +1121,17 @@ struct MouseTimeseriesSection: View {
                     }
                 }
                 .frame(height: 150)
+                .chartDateHover { date, x in
+                    hoveredCounts = date.flatMap { nearest(to: $0) }
+                    hoveredCountsX = x
+                }
+                .overlay(alignment: .topLeading) {
+                    if let h = hoveredCounts {
+                        MetricTooltip(title: tooltipTitle(h.date), rows: tooltipRows(h))
+                            .offset(x: max(0, min(hoveredCountsX - 75, 360)), y: -4)
+                            .allowsHitTesting(false)
+                    }
+                }
                 DualAxisLegend()
             }
 
@@ -1026,6 +1144,10 @@ struct MouseTimeseriesSection: View {
                         AreaMark(x: .value("Time", p.date), y: .value("Pixels", p.value))
                             .foregroundStyle(EventKind.move.color.opacity(0.5))
                     }
+                    if let h = hoveredMove {
+                        RuleMark(x: .value("Time", h.date))
+                            .foregroundStyle(.gray.opacity(0.3))
+                    }
                 }
                 .chartXAxis {
                     AxisMarks { _ in
@@ -1034,6 +1156,17 @@ struct MouseTimeseriesSection: View {
                     }
                 }
                 .frame(height: 90)
+                .chartDateHover { date, x in
+                    hoveredMove = date.flatMap { nearest(to: $0) }
+                    hoveredMoveX = x
+                }
+                .overlay(alignment: .topLeading) {
+                    if let h = hoveredMove {
+                        MetricTooltip(title: tooltipTitle(h.date), rows: tooltipRows(h))
+                            .offset(x: max(0, min(hoveredMoveX - 75, 360)), y: -4)
+                            .allowsHitTesting(false)
+                    }
+                }
             }
             Spacer(minLength: 0)
         }
@@ -1065,12 +1198,14 @@ struct MouseTimeseriesSection: View {
             }
             self.clickPts = denseSeries(label: "Clicks", byBucket: clickB, start: start, end: end, resolution: res)
             self.scrollPts = denseSeries(label: "Scroll", byBucket: scrollB, start: start, end: end, resolution: res)
+            self.rebuildTSPoints()
         }
         EventStore.shared.series(startBucket: start, endBucket: end, resolution: res,
                                  kinds: [.move]) { pts in
             var b: [Int: Int] = [:]
             for p in pts { b[Int(p.date.timeIntervalSince1970)] = p.value }
             self.movePts = denseSeries(label: "Movement", byBucket: b, start: start, end: end, resolution: res)
+            self.rebuildTSPoints()
         }
     }
 }
@@ -1092,10 +1227,35 @@ struct MouseDailySection: View {
     @State private var movePoints: [ChartLinePoint] = []
     @State private var days: [MouseDay] = []
     @State private var refreshTimer: Timer?
+    @State private var hoveredBars: MouseDay?
+    @State private var hoveredBarsX: CGFloat = 0
+    @State private var hoveredMove: MouseDay?
+    @State private var hoveredMoveX: CGFloat = 0
 
     private let listFormatter: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "MMM d, yyyy"; return f
     }()
+
+    private static let tooltipDayFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MMM d"; return f
+    }()
+
+    private func day(on date: Date) -> MouseDay? {
+        let cal = Calendar.current
+        return days.first { cal.isDate($0.date, inSameDayAs: date) }
+    }
+
+    /// Dim a bar when another day is hovered.
+    private func isDimmed(_ hovered: MouseDay?, _ date: Date) -> Bool {
+        guard let hovered = hovered else { return false }
+        return !Calendar.current.isDate(hovered.date, inSameDayAs: date)
+    }
+
+    private func tooltipRows(_ d: MouseDay) -> [(color: Color, label: String, value: String)] {
+        [(EventKind.click.color, "Clicks", fullNumber(d.clicks)),
+         (EventKind.scroll.color, "Scroll", fullNumber(d.scroll)),
+         (EventKind.move.color, "Movement", "\(fullNumber(d.move)) px")]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1122,16 +1282,32 @@ struct MouseDailySection: View {
                     ForEach(clickDays) { p in
                         BarMark(x: .value("Date", p.date, unit: .day), y: .value("Clicks", Double(p.value)))
                             .foregroundStyle(EventKind.click.color)
+                            .opacity(isDimmed(hoveredBars, p.date) ? 0.3 : 1)
                     }
                     ForEach(scrollDays) { p in
                         LineMark(x: .value("Date", p.date), y: .value("Scroll", Double(p.value) * factor))
                             .foregroundStyle(EventKind.scroll.color)
                             .symbol(.circle)
                     }
+                    if let h = hoveredBars {
+                        RuleMark(x: .value("Date", h.date, unit: .day))
+                            .foregroundStyle(.gray.opacity(0.3))
+                    }
                 }
                 .chartYScale(domain: 0...Double(maxClicks))
                 .chartYAxis { dualAxisMarks(factor: factor) }
                 .frame(height: 150)
+                .chartDateHover { date, x in
+                    hoveredBars = date.flatMap { day(on: $0) }
+                    hoveredBarsX = x
+                }
+                .overlay(alignment: .topLeading) {
+                    if let h = hoveredBars {
+                        MetricTooltip(title: Self.tooltipDayFormatter.string(from: h.date), rows: tooltipRows(h))
+                            .offset(x: max(0, min(hoveredBarsX - 75, 360)), y: -4)
+                            .allowsHitTesting(false)
+                    }
+                }
                 DualAxisLegend()
             }
 
@@ -1142,10 +1318,25 @@ struct MouseDailySection: View {
                 Chart {
                     ForEach(movePoints) { p in
                         BarMark(x: .value("Date", p.date, unit: .day), y: .value("Pixels", p.value))
-                            .foregroundStyle(EventKind.move.color.opacity(0.6))
+                            .foregroundStyle(EventKind.move.color.opacity(isDimmed(hoveredMove, p.date) ? 0.25 : 0.6))
+                    }
+                    if let h = hoveredMove {
+                        RuleMark(x: .value("Date", h.date, unit: .day))
+                            .foregroundStyle(.gray.opacity(0.3))
                     }
                 }
                 .frame(height: 80)
+                .chartDateHover { date, x in
+                    hoveredMove = date.flatMap { day(on: $0) }
+                    hoveredMoveX = x
+                }
+                .overlay(alignment: .topLeading) {
+                    if let h = hoveredMove {
+                        MetricTooltip(title: Self.tooltipDayFormatter.string(from: h.date), rows: tooltipRows(h))
+                            .offset(x: max(0, min(hoveredMoveX - 75, 360)), y: -4)
+                            .allowsHitTesting(false)
+                    }
+                }
             }
 
             Divider()

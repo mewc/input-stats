@@ -1,0 +1,11 @@
+{
+  "name": "input-stats",
+  "private": true,
+  "description": "macOS menubar app — local dev task runner (bun dev)",
+  "scripts": {
+    "dev": "./scripts/dev-watch.sh",
+    "run": "./dev.sh --run",
+    "build": "./build.sh",
+    "release": "./build.sh --release"
+  }
+}
