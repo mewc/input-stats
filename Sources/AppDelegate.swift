@@ -77,12 +77,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loadLocalCount()
         loadAndReconcileCounts()
 
-        hasAccessibilityPermission = AXIsProcessTrusted()
+        // Trust the tap, not the TCC flag: a stale grant after re-signing reads trusted but the
+        // tap won't create, which would otherwise leave the app silently dead (no CTA, Today: 0).
+        hasAccessibilityPermission = AXIsProcessTrusted() && startMonitoring()
         setupMenuBar()
 
-        if hasAccessibilityPermission {
-            startMonitoring()
-        } else {
+        if !hasAccessibilityPermission {
             // Don't prompt immediately: AXIsProcessTrusted() can read false during TCC warm-up
             // even when the grant is valid. The timer re-checks and only prompts after a grace
             // period if still untrusted, so an existing grant never triggers a false dialog/CTA.
@@ -430,13 +430,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Flip to the granted state once, then start monitoring and refresh the UI. Idempotent.
+    /// Start monitoring and refresh the UI once the tap actually comes up. Idempotent.
+    /// Only commits the granted state if `startMonitoring()` succeeds, so a TCC flag that reads
+    /// trusted while the tap still won't create keeps the timer retrying instead of going dead.
     private func handlePermissionGranted() {
         guard !hasAccessibilityPermission else { return }
+        guard startMonitoring() else { return }
         hasAccessibilityPermission = true
         permissionCheckTimer?.invalidate()
         permissionCheckTimer = nil
-        startMonitoring()
         rebuildMenu()
         updateMenuBarTitle()
     }
@@ -919,7 +921,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Keystroke Monitoring
 
-    private func startMonitoring() {
+    /// Create and enable the event tap. Returns true only if the tap was actually created —
+    /// `tapCreate` fails (returns nil) when the process isn't really trusted, which happens with a
+    /// stale Accessibility grant after re-signing even though `AXIsProcessTrusted()` may read true.
+    /// Callers use the return value as the source of truth for "are we monitoring", not the TCC check.
+    @discardableResult
+    private func startMonitoring() -> Bool {
         let trackedTypes: [CGEventType] = [
             .keyDown,
             .leftMouseDown, .rightMouseDown, .otherMouseDown,
@@ -945,7 +952,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
-            return
+            return false
         }
 
         eventTap = tap
@@ -959,6 +966,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         bucketFlushTimer = Timer.scheduledTimer(withTimeInterval: Double(EventStore.baseBucketSeconds), repeats: true) { [weak self] _ in
             self?.rolloverBucketIfNeeded()
         }
+        return true
     }
 
     // MARK: - High-Resolution Event Accumulation
