@@ -13,7 +13,9 @@ RUN_FOREGROUND=false
 # Create it once: Keychain Access > Certificate Assistant > Create a Certificate,
 # name "InputStats-Dev", Identity Type "Self Signed Root", Certificate Type "Code Signing".
 DEV_IDENTITY="InputStats-Dev"
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "$DEV_IDENTITY"; then
+# No -v: the cert is self-signed (not trust-anchored), so -v hides it, but codesign can still
+# sign with it — and a stable signature is all we need for the Accessibility grant to persist.
+if security find-identity -p codesigning 2>/dev/null | grep -q "$DEV_IDENTITY"; then
     export SIGNING_IDENTITY="$DEV_IDENTITY"
     echo "Signing with stable identity: $DEV_IDENTITY (Accessibility grant persists across rebuilds)"
 else
