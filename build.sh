@@ -78,12 +78,16 @@ if [ -d "$BUNDLE_NAME/Contents/Frameworks/Sparkle.framework" ]; then
     find "$BUNDLE_NAME/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" -name "*.xpc" -exec codesign --force --sign "$SIGNING_IDENTITY" {} \;
 fi
 
-# Use hardened runtime only for proper Developer ID signing (not ad-hoc)
-if [ "$SIGNING_IDENTITY" = "-" ]; then
-    codesign --force --deep --sign "$SIGNING_IDENTITY" "$BUNDLE_NAME"
-else
-    codesign --force --deep --options runtime --sign "$SIGNING_IDENTITY" "$BUNDLE_NAME"
-fi
+# Hardened runtime only for real Developer ID (it's required for notarization). Ad-hoc and
+# local self-signed certs must NOT use it: hardened runtime enforces library validation, which
+# requires the bundled Sparkle.framework to share the app's Team ID — a self-signed cert has
+# none, so the app would abort at launch with "Sparkle … code signature not valid".
+case "$SIGNING_IDENTITY" in
+    "Developer ID Application:"*)
+        codesign --force --deep --options runtime --sign "$SIGNING_IDENTITY" "$BUNDLE_NAME" ;;
+    *)
+        codesign --force --deep --sign "$SIGNING_IDENTITY" "$BUNDLE_NAME" ;;
+esac
 
 # Notarize if requested
 if [ "$NOTARIZE" = true ]; then
