@@ -2,18 +2,16 @@
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
     <title>Input Stats</title>
-    <!--
-      This feed is regenerated on every release by .github/workflows/release.yml: it signs
-      InputStats.zip with the EdDSA private key (GitHub secret SPARKLE_PRIVATE_KEY, whose public
-      half is SUPublicEDKey in Info.plist) and rewrites the <item> below to point at the new asset.
-      The placeholder item carries no <enclosure>, so a client never sees a phantom update until a
-      real signed release lands here.
-    -->
     <item>
-      <title>Version 0.1.4</title>
-      <sparkle:version>0.1.4</sparkle:version>
-      <sparkle:shortVersionString>0.1.4</sparkle:shortVersionString>
+      <title>Version 0.1.5</title>
+      <sparkle:version>0.1.5</sparkle:version>
+      <sparkle:shortVersionString>0.1.5</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <pubDate>Thu, 18 Jun 2026 23:47:50 +0000</pubDate>
+      <enclosure url="https://github.com/mewc/input-stats/releases/download/v0.1.5/InputStats.zip"
+                 type="application/octet-stream"
+                 length="3031180"
+                 sparkle:edSignature="apcZ55h8JSsy/G090qrRpLQ3AXnSa+d8kQ8s7QsT5bkLEkTmiFrbmq1UXlAUwXbI6NV2X+kTvZKfpmaDGmM6CQ=="/>
     </item>
   </channel>
 </rss>
