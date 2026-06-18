@@ -1,12 +1,16 @@
 import Cocoa
 import Sparkle
 
-/// Lightweight "is there a newer GitHub Release?" checker.
+/// Auto-update via Sparkle, with a lightweight GitHub-Releases nudge layered on top.
 ///
-/// This fork distributes via direct GitHub Release downloads (no Sparkle auto-install — see
-/// appcast.xml), so instead of driving a Sparkle feed we just compare the latest release tag
-/// to the running version and nudge the user to download. The Sparkle controller is still
-/// constructed so the bundled framework stays valid, but it never checks a feed.
+/// Two cooperating mechanisms:
+///   1. A cheap GitHub Releases API poll (`checkForUpdates`) compares the latest release tag to
+///      the running version. It drives the menu-bar badge and the "Download vX.Y.Z…" menu label
+///      without depending on Sparkle's own check cadence.
+///   2. Sparkle itself (`installUpdate`) reads the EdDSA-signed appcast feed (Info.plist
+///      `SUFeedURL`), downloads the signed zip, swaps the bundle in place (stripping quarantine,
+///      preserving the stable self-signed identity so the Accessibility grant survives), and
+///      relaunches. This is the actual "auto-download and install" path — no browser, no unzip.
 class UpdateChecker: NSObject {
     static let shared = UpdateChecker()
     static let updateAvailableNotification = Notification.Name("UpdateAvailable")
@@ -16,19 +20,27 @@ class UpdateChecker: NSObject {
 
     /// Newer version string (e.g. "0.1.3") when an update is available, else nil.
     private(set) var availableVersion: String?
-    /// The GitHub release page to open for the available update.
+    /// The GitHub release page (fallback if Sparkle install can't proceed).
     private(set) var releaseURL: URL?
 
     var updateAvailable: Bool { availableVersion != nil }
 
     private override init() {
         super.init()
-        // Constructed but not started; we don't use Sparkle's feed (see checkForUpdates()).
+        // Start the updater so the appcast-driven install flow (installUpdate()) works and
+        // Sparkle's own scheduled background checks run (SUEnableAutomaticChecks in Info.plist).
         updaterController = SPUStandardUpdaterController(
-            startingUpdater: false,
+            startingUpdater: true,
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
+    }
+
+    /// Download + install the latest update via Sparkle, showing its standard progress/confirm UI,
+    /// then relaunch. Brings the app forward first since it's a menu-bar (LSUIElement) agent.
+    func installUpdate() {
+        NSApp.activate(ignoringOtherApps: true)
+        updaterController.checkForUpdates(nil)
     }
 
     private var currentVersion: String {

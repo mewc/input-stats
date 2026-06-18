@@ -195,8 +195,8 @@ class AboutWindowController: NSWindowController {
     }
 
     @objc private func installUpdate() {
-        // Downloads-only distribution: open the GitHub release page to grab the new build.
-        updateChecker.openReleasePage()
+        // Hand off to Sparkle: download the signed update, install it, and relaunch.
+        updateChecker.installUpdate()
         window?.close()
     }
 }

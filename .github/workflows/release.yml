@@ -60,3 +60,52 @@ jobs:
                ```
             4. Grant **Accessibility** permission when prompted
                (System Settings → Privacy & Security → Accessibility).
+
+            From this version on, the app **auto-updates itself** — future releases
+            download and install in-place from the menu (no manual steps).
+
+      # Sign the build with our EdDSA key and refresh appcast.xml on main, so the in-app
+      # Sparkle updater (SUFeedURL → raw main/appcast.xml) can verify, download, and install
+      # the next release in place. Runs AFTER the release so the enclosure asset already exists.
+      - name: Sign update and publish appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Sparkle signing tools, pinned to the framework version we bundle.
+          curl -fsSL -o /tmp/sparkle.tar.xz "https://github.com/sparkle-project/Sparkle/releases/download/2.8.1/Sparkle-2.8.1.tar.xz"
+          mkdir -p /tmp/sparkle && tar xf /tmp/sparkle.tar.xz -C /tmp/sparkle
+          # Pipe the private key via stdin (never written to disk / argv).
+          SIGN_OUTPUT="$(printf '%s' "$SPARKLE_PRIVATE_KEY" | /tmp/sparkle/bin/sign_update --ed-key-file - InputStats.zip)"
+          echo "sign_update -> $SIGN_OUTPUT"
+          ED_SIG="$(echo "$SIGN_OUTPUT" | sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')"
+          LENGTH="$(echo "$SIGN_OUTPUT" | sed -n 's/.*length="\([^"]*\)".*/\1/p')"
+          if [ -z "$ED_SIG" ] || [ -z "$LENGTH" ]; then
+            echo "::error::sign_update produced no signature/length" && exit 1
+          fi
+          PUBDATE="$(date -u +'%a, %d %b %Y %H:%M:%S +0000')"
+          cat > appcast.xml <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>Input Stats</title>
+              <item>
+                <title>Version ${VERSION}</title>
+                <sparkle:version>${VERSION}</sparkle:version>
+                <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+                <pubDate>${PUBDATE}</pubDate>
+                <enclosure url="https://github.com/mewc/input-stats/releases/download/v${VERSION}/InputStats.zip"
+                           type="application/octet-stream"
+                           length="${LENGTH}"
+                           sparkle:edSignature="${ED_SIG}"/>
+              </item>
+            </channel>
+          </rss>
+          EOF
+          # Publish the feed on main (SUFeedURL serves raw main/appcast.xml).
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add appcast.xml
+          git commit -m "chore(release): appcast for v${VERSION}"
+          git push origin HEAD:main

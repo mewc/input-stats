@@ -658,8 +658,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             )
             theMenu.addItem(header)
             theMenu.addItem(NSMenuItem(
-                title: "Download v\(newVersion)\u{2026}",
-                action: #selector(openReleasePage),
+                title: "Install v\(newVersion)\u{2026}",
+                action: #selector(installUpdate),
                 keyEquivalent: ""
             ))
             theMenu.addItem(NSMenuItem.separator())
@@ -911,8 +911,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    @objc private func openReleasePage() {
-        updateChecker.openReleasePage()
+    @objc private func installUpdate() {
+        updateChecker.installUpdate()
     }
 
     @objc private func quit() {

@@ -3,17 +3,17 @@
   <channel>
     <title>Input Stats</title>
     <!--
-      Auto-update is disabled for this fork (downloads-only distribution).
-      This feed exists only so the in-app "Check for Updates" button doesn't error.
-      To enable real Sparkle auto-updates later: generate your own EdDSA key
-      (Sparkle's `generate_keys`), put the public key in Info.plist SUPublicEDKey,
-      re-enable SUEnableAutomaticChecks, and have the release workflow sign the
-      zip and rewrite this item per release.
+      This feed is regenerated on every release by .github/workflows/release.yml: it signs
+      InputStats.zip with the EdDSA private key (GitHub secret SPARKLE_PRIVATE_KEY, whose public
+      half is SUPublicEDKey in Info.plist) and rewrites the <item> below to point at the new asset.
+      The placeholder item carries no <enclosure>, so a client never sees a phantom update until a
+      real signed release lands here.
     -->
     <item>
-      <title>Version 0.0.1</title>
-      <sparkle:version>0.0.1</sparkle:version>
-      <sparkle:shortVersionString>0.0.1</sparkle:shortVersionString>
+      <title>Version 0.1.4</title>
+      <sparkle:version>0.1.4</sparkle:version>
+      <sparkle:shortVersionString>0.1.4</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
     </item>
   </channel>
 </rss>
