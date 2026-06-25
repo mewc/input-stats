@@ -35,6 +35,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var clickDaily: [String: Int] = [:]
     private var moveDaily: [String: Int] = [:]
 
+    // The day our in-memory counts belong to. Lets `checkDayChange()` detect a midnight rollover
+    // with a cheap string compare instead of decoding JSON from UserDefaults on every keystroke.
+    private var activeDay: String = ""
+
     private let deviceID: String = {
         let defaults = UserDefaults.standard
         let key = "deviceUUID"
@@ -181,6 +185,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 localAppCounts = [:]
             }
         }
+        // In-memory counts now reflect today; record it so checkDayChange() only fires at rollover.
+        activeDay = todayString()
     }
 
     private func saveLocalCount() {
@@ -447,28 +453,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func checkDayChange() {
         let today = todayString()
-        let defaults = UserDefaults.standard
-        if let data = defaults.data(forKey: localDefaultsKey),
-           let state = try? JSONDecoder().decode(LocalState.self, from: data),
-           state.date != today {
-            localKeystrokeCount = 0
-            localAppCounts = [:]
-            totalKeystrokeCount = 0
-            loadAndReconcileCounts()
-        }
+        guard today != activeDay else { return }
+        activeDay = today
+        localKeystrokeCount = 0
+        localAppCounts = [:]
+        totalKeystrokeCount = 0
+        loadAndReconcileCounts()
     }
 
+    /// Shared "yyyy-MM-dd" formatter — reused instead of allocating one per keystroke.
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
     private func todayString() -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date())
+        AppDelegate.dayFormatter.string(from: Date())
     }
 
     private func yesterdayString() -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
         let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date())!
-        return formatter.string(from: yesterday)
+        return AppDelegate.dayFormatter.string(from: yesterday)
     }
 
     private func formatCount(_ count: Int) -> String {
@@ -792,19 +798,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    // The menu-bar icons never change at runtime (they depend only on permission state), so build
+    // each once and reuse it — recreating an NSImage + drawingHandler on every keystroke was pure churn.
+    private lazy var keyboardIcon: NSImage = createKeyboardIcon()
+    private lazy var warningIcon: NSImage = createWarningIcon()
+    private static let menuBarFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+
     private func updateMenuBarTitle() {
         let title = formatCount(totalKeystrokeCount) + (isDevBuild ? " (dev)" : "")
 
         DispatchQueue.main.async {
             guard let button = self.statusItem?.button else { return }
 
-            let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-            let attributes: [NSAttributedString.Key: Any] = [.font: font]
+            let attributes: [NSAttributedString.Key: Any] = [.font: AppDelegate.menuBarFont]
             button.attributedTitle = NSAttributedString(string: " " + title, attributes: attributes)
 
-            button.image = self.hasAccessibilityPermission
-                ? self.createKeyboardIcon()
-                : self.createWarningIcon()
+            let icon = self.hasAccessibilityPermission ? self.keyboardIcon : self.warningIcon
+            if button.image !== icon { button.image = icon }
         }
     }
 
@@ -948,7 +958,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let appDelegate = Unmanaged<AppDelegate>.fromOpaque(refcon).takeUnretainedValue()
                     appDelegate.handleTapEvent(type: type, event: event)
                 }
-                return Unmanaged.passRetained(event)
+                // `event` is a borrowed reference owned by the tap. Pass it back UNretained —
+                // returning `passRetained` here adds a CFRetain the tap never balances, leaking
+                // one CGEvent per delivered event (mouse-moves alone are hundreds/sec → GBs).
+                return Unmanaged.passUnretained(event)
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
