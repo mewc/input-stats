@@ -1,5 +1,6 @@
 InputStats.zip
 .build
+.conductor/settings.local.toml
 AppIcon.iconset/
 icon_macos.png
 Input Stats.app
