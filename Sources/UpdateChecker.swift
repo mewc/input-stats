@@ -38,9 +38,19 @@ class UpdateChecker: NSObject {
 
     /// Download + install the latest update via Sparkle, showing its standard progress/confirm UI,
     /// then relaunch. Brings the app forward first since it's a menu-bar (LSUIElement) agent.
+    /// Used by the explicit menu action — always shows UI (even "you're up to date").
     func installUpdate() {
         NSApp.activate(ignoringOtherApps: true)
         updaterController.checkForUpdates(nil)
+    }
+
+    /// Check the signed appcast and, *only if* a newer signed build is available (and the user
+    /// hasn't chosen "Skip This Version"), present Sparkle's standard download-and-install prompt.
+    /// Silent when there's nothing to install — this is the proactive "prompt to auto-update" path.
+    func promptForUpdateInBackground() {
+        // Bring the agent forward so the modal prompt is visible over the frontmost app.
+        NSApp.activate(ignoringOtherApps: true)
+        updaterController.updater.checkForUpdatesInBackground()
     }
 
     private var currentVersion: String {

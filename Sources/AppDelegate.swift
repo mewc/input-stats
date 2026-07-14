@@ -108,25 +108,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.updateChecker.checkForUpdates()
         }
 
-        checkFirstRun()
+        ensureLoginItemEnabled()
     }
 
     @objc private func handleUpdateAvailable() {
         setStatusItemUpdateBadgeVisible(true)
         rebuildMenu()
+        // A newer signed build is live — proactively present Sparkle's download-and-install prompt
+        // instead of waiting for the user to open the menu. Silent if Sparkle finds nothing to do.
+        updateChecker.promptForUpdateInBackground()
     }
 
-    private func checkFirstRun() {
-        let defaults = UserDefaults.standard
-        let hasSetupLoginItem = defaults.bool(forKey: "hasSetupLoginItem")
+    /// Key set to true only when the user explicitly turns "Start at Login" off from the menu.
+    private let loginItemDisabledKey = "loginItemUserDisabled"
 
-        if !hasSetupLoginItem {
-            defaults.set(true, forKey: "hasSetupLoginItem")
-            do {
-                try SMAppService.mainApp.register()
-            } catch {
-                print("Failed to enable launch at login: \(error)")
-            }
+    /// Keep the app registered as a login item on every launch (self-heals a first-run failure or a
+    /// registration that got cleared), unless the user has explicitly opted out via the menu toggle.
+    private func ensureLoginItemEnabled() {
+        guard !UserDefaults.standard.bool(forKey: loginItemDisabledKey) else { return }
+        guard SMAppService.mainApp.status != .enabled else { return }
+        do {
+            try SMAppService.mainApp.register()
+        } catch {
+            print("Failed to enable launch at login: \(error)")
         }
     }
 
@@ -902,9 +906,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if SMAppService.mainApp.status == .enabled {
                 try SMAppService.mainApp.unregister()
                 sender.state = .off
+                // Remember the explicit opt-out so ensureLoginItemEnabled() doesn't re-enable it.
+                UserDefaults.standard.set(true, forKey: loginItemDisabledKey)
             } else {
                 try SMAppService.mainApp.register()
                 sender.state = .on
+                UserDefaults.standard.set(false, forKey: loginItemDisabledKey)
             }
         } catch {
             print("Failed to toggle launch at login: \(error)")
