@@ -22,6 +22,17 @@
 	<string>13.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.mewc.input-stats.cloud</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>inputstats</string>
+			</array>
+		</dict>
+	</array>
 	<key>SUAutomaticallyUpdate</key>
 	<false/>
 	<key>SUEnableAutomaticChecks</key>
