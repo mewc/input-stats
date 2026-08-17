@@ -20,7 +20,7 @@ final class CloudSync {
 
     /// Public URL of the deployed backend. Override at runtime for dev with:
     /// `defaults write com.mewc.input-stats cloudBaseURL https://…`
-    static let defaultBaseURL = "https://input-stats-cloud.up.railway.app"
+    static let defaultBaseURL = "https://input-stats.drummerduck.com"
 
     var baseURL: URL {
         if let s = UserDefaults.standard.string(forKey: "cloudBaseURL"),
