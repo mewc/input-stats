@@ -22,6 +22,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var updateCheckTimer: Timer?
     private var updateDotLayer: CALayer?
 
+    // Optional cloud sync (Google login -> Postgres). iCloud stays the default/offline path.
+    private let cloudSync = CloudSync.shared
+
     // High-resolution local timeseries (keys + mouse/trackpad). Local-only, never synced.
     private let eventStore = EventStore.shared
     private var currentBucket: Int = 0
@@ -109,6 +112,76 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         ensureLoginItemEnabled()
+        setupCloudSync()
+    }
+
+    // MARK: - Cloud Sync (optional)
+
+    private func setupCloudSync() {
+        // Receive the `inputstats://connected?token=…` redirect from the browser sign-in.
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleURLEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
+        cloudSync.onStateChange = { [weak self] in self?.rebuildMenu() }
+        cloudSync.onPulled = { [weak self] pulled in self?.handleCloudPull(pulled) }
+        if cloudSync.isConnected { cloudSync.pull() }
+    }
+
+    @objc private func handleURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent: NSAppleEventDescriptor) {
+        guard let s = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
+              let url = URL(string: s) else { return }
+        cloudSync.handleCallback(url: url)
+    }
+
+    /// Upload this device's history (today reflects the live local count) to the cloud.
+    private func pushToCloud() {
+        guard cloudSync.isConnected else { return }
+        let today = todayString()
+        var payload = SyncData()
+        var deviceData = DeviceData()
+        deviceData.dailyCounts = cachedSyncData.devices[deviceID]?.dailyCounts ?? [:]
+        deviceData.setCount(localKeystrokeCount, for: today, appCounts: localAppCounts.isEmpty ? nil : localAppCounts)
+        payload.devices[deviceID] = deviceData
+        cloudSync.push(payload)
+    }
+
+    /// Merge a server blob into the in-memory cache + iCloud file and refresh the UI.
+    private func handleCloudPull(_ pulled: SyncData) {
+        checkDayChange()
+        let today = todayString()
+
+        cachedSyncData.merge(with: pulled)
+
+        if cachedSyncData.devices[deviceID] == nil {
+            cachedSyncData.devices[deviceID] = DeviceData()
+        }
+        // If the cloud somehow has a higher count for this device today, adopt it.
+        let cloudToday = cachedSyncData.devices[deviceID]?.count(for: today) ?? 0
+        if cloudToday > localKeystrokeCount {
+            localKeystrokeCount = cloudToday
+            saveLocalCount()
+        }
+        cachedSyncData.devices[deviceID]?.setCount(localKeystrokeCount, for: today, appCounts: localAppCounts.isEmpty ? nil : localAppCounts)
+
+        let total = cachedSyncData.totalCount(for: today)
+        if total != totalKeystrokeCount {
+            totalKeystrokeCount = total
+            updateMenuBarTitle()
+        }
+
+        // Fold the pulled data into the iCloud file too, so the History window stays consistent.
+        if let url = syncFileURL {
+            syncQueue.async {
+                self.coordinatedSync(to: url) { existing in
+                    var merged = existing
+                    merged.merge(with: pulled)
+                    return merged
+                }
+            }
+        }
     }
 
     @objc private func handleUpdateAvailable() {
@@ -296,6 +369,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func syncToCloud() {
+        // Best-effort push to the cloud backend (no-op unless the user connected).
+        pushToCloud()
+
         guard let url = syncFileURL else { return }
 
         checkDayChange()
@@ -419,6 +495,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startSyncTimer() {
         syncTimer = Timer.scheduledTimer(withTimeInterval: 300.0, repeats: true) { [weak self] _ in
             self?.syncToCloud()
+            self?.cloudSync.pull()
         }
     }
 
@@ -701,6 +778,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         theMenu.addItem(NSMenuItem.separator())
 
+        addCloudSyncSection()
+
+        theMenu.addItem(NSMenuItem.separator())
+
         let launchAtLogin = SMAppService.mainApp.status == .enabled
         let loginItem = NSMenuItem(
             title: "Start at Login",
@@ -784,6 +865,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let recordDate = stats.recordDate {
             addRow("Record: \(fmt(stats.recordCount)) (\(formatDateShort(recordDate)))")
         }
+    }
+
+    /// Cloud-sync menu row: a "Sign in to Sync…" CTA, or the connected account + sign-out.
+    private func addCloudSyncSection() {
+        if cloudSync.isConnected {
+            let label = cloudSync.accountEmail.map { "Synced: \($0)" } ?? "Synced to cloud"
+            let status = NSMenuItem(title: label, action: nil, keyEquivalent: "")
+            status.isEnabled = false
+            theMenu.addItem(status)
+            theMenu.addItem(NSMenuItem(
+                title: "Sign Out of Cloud Sync",
+                action: #selector(signOutOfCloud),
+                keyEquivalent: ""
+            ))
+        } else {
+            theMenu.addItem(NSMenuItem(
+                title: "Sign in to Sync\u{2026}",
+                action: #selector(signInToCloud),
+                keyEquivalent: ""
+            ))
+        }
+    }
+
+    @objc private func signInToCloud() {
+        cloudSync.beginLogin()
+    }
+
+    @objc private func signOutOfCloud() {
+        cloudSync.signOut()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
