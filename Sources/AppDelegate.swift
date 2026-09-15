@@ -1069,6 +1069,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 keyEquivalent: ""
             ))
             theMenu.addItem(NSMenuItem(
+                title: "Share Public Profile\u{2026}",
+                action: #selector(openPublicProfileSettings),
+                keyEquivalent: ""
+            ))
+            theMenu.addItem(NSMenuItem(
                 title: "Sign Out of Cloud Sync",
                 action: #selector(signOutOfCloud),
                 keyEquivalent: ""
@@ -1129,6 +1134,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openCloudDashboard() {
         NSWorkspace.shared.open(cloudSync.baseURL.appendingPathComponent("dashboard"))
+    }
+
+    /// The profile is off by default; the web settings page is where it gets switched on and shared.
+    @objc private func openPublicProfileSettings() {
+        NSWorkspace.shared.open(cloudSync.baseURL.appendingPathComponent("dashboard/profile"))
     }
 
     @objc private func signOutOfCloud() {

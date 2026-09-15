@@ -39,6 +39,7 @@ No notarized release / Homebrew cask — this is a personal public fork distribu
   windows can't render a punishing number of points
 - Start at login
 - Free Google login for account-backed sync and a private web dashboard with per-app analytics
+- Optional public profile page (off by default) with a live share card — **Share Public Profile…** in the menu
 - De-identified community analytics using coarse app categories and a 20-account publication threshold
 
 ## Permissions
