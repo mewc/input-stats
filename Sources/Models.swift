@@ -1,5 +1,11 @@
 import Foundation
 
+enum CloudSyncMigration {
+    static func needsServerDeviceIdentity(hasToken: Bool, hasServerDeviceID: Bool) -> Bool {
+        hasToken && !hasServerDeviceID
+    }
+}
+
 // MARK: - Privacy-safe cloud minute payload
 
 struct MinuteClicksPayload: Codable {

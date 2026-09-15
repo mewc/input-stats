@@ -62,6 +62,17 @@ final class CloudSync {
     }
     var accountEmail: String? { UserDefaults.standard.string(forKey: emailKey) }
 
+    /// Released clients already have a token and signing secret, but did not
+    /// persist the server device ID introduced for minute-upload cursors. Fetch
+    /// it once with the existing credential so upgrades backfill automatically.
+    func refreshDeviceIdentityIfNeeded() {
+        guard CloudSyncMigration.needsServerDeviceIdentity(
+            hasToken: deviceToken != nil,
+            hasServerDeviceID: serverDeviceID != nil
+        ), let token = deviceToken else { return }
+        provision(token: token)
+    }
+
     // MARK: Login
 
     func beginLogin(clientDeviceID: String, deviceName: String) {

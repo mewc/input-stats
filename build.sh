@@ -50,6 +50,7 @@ if [ "$RELEASE_BUILD" != true ]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.mewc.input-stats.dev" "$BUNDLE_NAME/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Input Stats (Dev)" "$BUNDLE_NAME/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleName Input Stats (Dev)" "$BUNDLE_NAME/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$BUNDLE_NAME/Contents/Info.plist"
 fi
 cp AppIcon.icns "$BUNDLE_NAME/Contents/Resources/"
 

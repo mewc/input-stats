@@ -29,8 +29,10 @@ class UpdateChecker: NSObject {
         super.init()
         // Start the updater so the appcast-driven install flow (installUpdate()) works and
         // Sparkle's own scheduled background checks run (SUEnableAutomaticChecks in Info.plist).
+        // Dev builds use a different signing identity and therefore must not try
+        // to install a production-signed bundle over themselves.
         updaterController = SPUStandardUpdaterController(
-            startingUpdater: true,
+            startingUpdater: !isDevBuild,
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
@@ -40,6 +42,10 @@ class UpdateChecker: NSObject {
     /// then relaunch. Brings the app forward first since it's a menu-bar (LSUIElement) agent.
     /// Used by the explicit menu action — always shows UI (even "you're up to date").
     func installUpdate() {
+        guard !isDevBuild else {
+            openReleasePage()
+            return
+        }
         NSApp.activate(ignoringOtherApps: true)
         updaterController.checkForUpdates(nil)
     }
@@ -48,6 +54,7 @@ class UpdateChecker: NSObject {
     /// hasn't chosen "Skip This Version"), present Sparkle's standard download-and-install prompt.
     /// Silent when there's nothing to install — this is the proactive "prompt to auto-update" path.
     func promptForUpdateInBackground() {
+        guard !isDevBuild else { return }
         // Bring the agent forward so the modal prompt is visible over the frontmost app.
         NSApp.activate(ignoringOtherApps: true)
         updaterController.updater.checkForUpdatesInBackground()
@@ -60,6 +67,10 @@ class UpdateChecker: NSObject {
     /// Query the latest GitHub release and compare to the running version. Posts
     /// `updateAvailableNotification` when a newer version is first seen. `completion` runs on main.
     func checkForUpdates(completion: (() -> Void)? = nil) {
+        guard !isDevBuild else {
+            completion?()
+            return
+        }
         guard let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest") else {
             completion?()
             return

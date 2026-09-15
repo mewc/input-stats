@@ -14,8 +14,9 @@ struct SyncDataTests {
         repairedSyncRowKeepsLivePostRepairKeys()
         try minutePayloadContainsCountsButNoInputContent()
         try minutePayloadUsesMinuteTimestampAndClickTypes()
+        legacyCredentialsRefreshMissingServerDeviceIdentity()
         compactCountUsesAtMostThreeSignificantDigits()
-        print("InputStats model tests: 12 passed")
+        print("InputStats model tests: 13 passed")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -178,6 +179,12 @@ struct SyncDataTests {
         expect(json.contains(#""left":4"#), "left clicks missing")
         expect(json.contains(#""right":1"#), "right clicks missing")
         expect(json.contains(#""other":2"#), "other clicks missing")
+    }
+
+    private static func legacyCredentialsRefreshMissingServerDeviceIdentity() {
+        expect(CloudSyncMigration.needsServerDeviceIdentity(hasToken: true, hasServerDeviceID: false), "legacy credentials did not request identity refresh")
+        expect(!CloudSyncMigration.needsServerDeviceIdentity(hasToken: true, hasServerDeviceID: true), "known identity refreshed unnecessarily")
+        expect(!CloudSyncMigration.needsServerDeviceIdentity(hasToken: false, hasServerDeviceID: false), "missing credential requested identity refresh")
     }
 
     private static func sampleMinutePayload() -> MinuteBatchPayload {
