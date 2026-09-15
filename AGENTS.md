@@ -6,6 +6,9 @@
 - **Build:**
   - `./build.sh` - dev build (yellow keyboard icon, "-dev" version suffix)
   - `./build.sh --release` - production build
+- **Test:** `./test.sh` - zero-dependency Swift model and sync regression tests
+- **Repair historical data:** `./repair-data.sh` previews the exact v0.1.8 carry-forward repair;
+  `./repair-data.sh --apply` creates a timestamped backup and writes it.
 - **Build, deploy, and restart:**
   ```
   ./build.sh && pkill -f "Input Stats.app" 2>/dev/null; rm -rf "/Applications/Input Stats.app" && cp -r "Input Stats.app" /Applications/ && open "/Applications/Input Stats.app"

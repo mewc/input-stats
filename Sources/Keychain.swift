@@ -4,13 +4,22 @@ import Security
 /// Minimal Keychain wrapper for storing the cloud device token + signing secret.
 /// Generic-password items scoped to this app; values are small strings.
 enum Keychain {
-    private static let service = "com.mewc.input-stats.cloud"
+    // Keep dev sign-ins from overwriting the production app's device token and signing secret.
+    private static var service: String {
+        isDevBuild ? "com.mewc.input-stats.cloud.dev" : "com.mewc.input-stats.cloud"
+    }
 
     @discardableResult
     static func set(_ value: String, for account: String) -> Bool {
         let data = Data(value.utf8)
-        // Remove any existing item first so we can cleanly re-add.
-        SecItemDelete(query(for: account) as CFDictionary)
+        let updates: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+        ]
+        let updateStatus = SecItemUpdate(query(for: account) as CFDictionary, updates as CFDictionary)
+        if updateStatus == errSecSuccess { return true }
+        guard updateStatus == errSecItemNotFound else { return false }
+
         var attrs = query(for: account)
         attrs[kSecValueData as String] = data
         attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
@@ -32,7 +41,8 @@ enum Keychain {
 
     @discardableResult
     static func delete(_ account: String) -> Bool {
-        SecItemDelete(query(for: account) as CFDictionary) == errSecSuccess
+        let status = SecItemDelete(query(for: account) as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 
     private static func query(for account: String) -> [String: Any] {

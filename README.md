@@ -28,6 +28,7 @@ No notarized release / Homebrew cask — this is a personal public fork distribu
 ## Features
 
 - Live keystroke counter in the menu bar
+- Compact three-significant-digit menu-bar totals, with the full number shown while the menu is open
 - Daily / weekly / monthly keystroke stats, multi-device sync via iCloud
 - Per-app keystroke breakdown
 - **Mouse & trackpad tracking** — clicks, scroll, and pointer-movement distance
@@ -35,6 +36,7 @@ No notarized release / Homebrew cask — this is a personal public fork distribu
 - **Timeseries drilldown** — span picker (1h–30d) with resolution down to 5s blocks, gated so wide
   windows can't render a punishing number of points
 - Start at login
+- Optional Google sign-in for account-backed sync, with visible retry and expired-session states
 
 ## Permissions
 
@@ -45,11 +47,18 @@ Accessibility permission is required to count input. You'll be prompted on first
 ## Build from source
 
 ```bash
-./build.sh             # release build (Input Stats.app)
-./build.sh --release   # same, explicit
+./build.sh             # dev build (Input Stats (Dev).app)
+./build.sh --release   # production build (Input Stats.app)
 ./dev.sh               # dev build, install + relaunch (yellow icon, "(dev)" suffix)
 ./dev.sh --run         # dev build, run in foreground to see logs
+./test.sh              # sync/repair and count-format regression tests
+./repair-data.sh       # dry-run repair of v0.1.8 carried daily totals
+./repair-data.sh --apply # back up the iCloud JSON, then apply the repairs
 ```
+
+`repair-data.sh` scans every device in the merged history. It only changes rows matching the exact
+carried-count fingerprint, prints each proposed correction, and leaves the source untouched unless
+`--apply` is supplied. Use `--file PATH` to inspect a copied or alternate sync JSON file.
 
 ## Releasing
 

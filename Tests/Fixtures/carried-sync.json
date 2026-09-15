@@ -1,0 +1,24 @@
+{
+  "devices": {
+    "test-device": {
+      "dailyCounts": {
+        "2026-09-08": {
+          "count": 100,
+          "lastModified": 1,
+          "appCounts": { "app": 100 }
+        },
+        "2026-09-09": {
+          "count": 140,
+          "lastModified": 2,
+          "appCounts": { "app": 40 }
+        },
+        "2026-09-10": {
+          "count": 165,
+          "lastModified": 3,
+          "appCounts": { "app": 25 }
+        }
+      }
+    }
+  },
+  "version": 2
+}
