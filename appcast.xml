@@ -3,15 +3,15 @@
   <channel>
     <title>Input Stats</title>
     <item>
-      <title>Version 0.1.8</title>
-      <sparkle:version>0.1.8</sparkle:version>
-      <sparkle:shortVersionString>0.1.8</sparkle:shortVersionString>
+      <title>Version 0.1.9</title>
+      <sparkle:version>0.1.9</sparkle:version>
+      <sparkle:shortVersionString>0.1.9</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <pubDate>Thu, 20 Aug 2026 11:05:10 +0000</pubDate>
-      <enclosure url="https://github.com/mewc/input-stats/releases/download/v0.1.8/InputStats.zip"
+      <pubDate>Tue, 15 Sep 2026 03:52:42 +0000</pubDate>
+      <enclosure url="https://github.com/mewc/input-stats/releases/download/v0.1.9/InputStats.zip"
                  type="application/octet-stream"
-                 length="3062143"
-                 sparkle:edSignature="TYwzBA8dBZiyQcVp6I3eeqPl7X8qzZORM7A/hjxkC8I+5u6D1UTnV8sGvxhsz3KzBq9UfDyoJy3JgSTlHDBkDw=="/>
+                 length="3080248"
+                 sparkle:edSignature="YGyvl5ysl78i3dpl+SxIBYH7sk/saLn9up3o5O/mqJ3dHlrN8Rm9OnQ50vlU65sxPG609klcZNvXAWCP1kwHBg=="/>
     </item>
   </channel>
 </rss>
