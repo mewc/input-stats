@@ -52,7 +52,13 @@ Accessibility permission is required to count input. You'll be prompted on first
 ./dev.sh               # dev build, install + relaunch (yellow icon, "(dev)" suffix)
 ./dev.sh --run         # dev build, run in foreground to see logs
 ./test.sh              # sync/repair and count-format regression tests
+./repair-data.sh       # dry-run repair of v0.1.8 carried daily totals
+./repair-data.sh --apply # back up the iCloud JSON, then apply the repairs
 ```
+
+`repair-data.sh` scans every device in the merged history. It only changes rows matching the exact
+carried-count fingerprint, prints each proposed correction, and leaves the source untouched unless
+`--apply` is supplied. Use `--file PATH` to inspect a copied or alternate sync JSON file.
 
 ## Releasing
 

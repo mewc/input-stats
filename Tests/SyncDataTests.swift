@@ -7,9 +7,11 @@ struct SyncDataTests {
         newerResetGenerationOverridesHigherStaleCount()
         countCanGrowWithinResetGeneration()
         repairsEntireConsecutiveCarryChain()
+        repairsEveryDeviceAndIsIdempotent()
         doesNotRepairNonConsecutiveOrNonMatchingData()
+        preservesResetGenerationAsCountAdvances()
         compactCountUsesAtMostThreeSignificantDigits()
-        print("InputStats model tests: 6 passed")
+        print("InputStats model tests: 8 passed")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -70,6 +72,33 @@ struct SyncDataTests {
         expect(data.repairCarriedDailyCounts(for: "device").isEmpty, "valid data was repaired")
         expect(data.devices["device"]?.count(for: "2026-09-10") == 140, "non-consecutive day changed")
         expect(data.devices["device"]?.count(for: "2026-09-11") == 170, "non-matching day changed")
+    }
+
+    private static func repairsEveryDeviceAndIsIdempotent() {
+        var data = SyncData()
+        for deviceID in ["mac-a", "mac-b"] {
+            var device = DeviceData()
+            device.dailyCounts["2026-09-08"] = DailyCount(count: 100, appCounts: ["app": 100])
+            device.dailyCounts["2026-09-09"] = DailyCount(count: 140, appCounts: ["app": 40])
+            data.devices[deviceID] = device
+        }
+
+        let repaired = data.repairAllCarriedDailyCounts()
+
+        expect(Set(repaired.keys) == Set(["mac-a", "mac-b"]), "not every device was repaired")
+        expect(data.devices["mac-a"]?.count(for: "2026-09-09") == 40, "first device stayed corrupt")
+        expect(data.devices["mac-b"]?.count(for: "2026-09-09") == 40, "second device stayed corrupt")
+        expect(data.repairAllCarriedDailyCounts().isEmpty, "repair was not idempotent")
+    }
+
+    private static func preservesResetGenerationAsCountAdvances() {
+        var device = DeviceData()
+        device.dailyCounts["2026-09-15"] = DailyCount(count: 0, resetAt: 200)
+
+        device.setCount(25, for: "2026-09-15", appCounts: ["app": 25])
+
+        expect(device.dailyCounts["2026-09-15"]?.count == 25, "count did not advance")
+        expect(device.dailyCounts["2026-09-15"]?.resetAt == 200, "count advance lost reset generation")
     }
 
     private static func compactCountUsesAtMostThreeSignificantDigits() {

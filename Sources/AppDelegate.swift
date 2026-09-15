@@ -168,7 +168,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let today = todayString()
 
         cachedSyncData.merge(with: pulled)
-        let repairedDates = cachedSyncData.repairCarriedDailyCounts(for: deviceID)
+        let repairedDates = cachedSyncData.repairAllCarriedDailyCounts()[deviceID] ?? []
 
         if cachedSyncData.devices[deviceID] == nil {
             cachedSyncData.devices[deviceID] = DeviceData()
@@ -328,7 +328,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 updated.devices[self.deviceID] = DeviceData()
             }
 
-            let repairedDates = updated.repairCarriedDailyCounts(for: self.deviceID)
+            let repairedDates = updated.repairAllCarriedDailyCounts()[self.deviceID] ?? []
             let repairedToday = repairedDates.contains(today)
 
             if repairedToday {
@@ -532,7 +532,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // discard a newer reset generation learned locally or from the SaaS service.
                 var reconciled = self.cachedSyncData
                 reconciled.merge(with: syncData)
-                let repairedDates = reconciled.repairCarriedDailyCounts(for: self.deviceID)
+                let repairedDates = reconciled.repairAllCarriedDailyCounts()[self.deviceID] ?? []
 
                 if let cloudDeviceData = reconciled.devices[self.deviceID] {
                     let cloudCount = cloudDeviceData.count(for: today)

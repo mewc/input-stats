@@ -215,6 +215,20 @@ struct SyncData: Codable {
         return repairedDates
     }
 
+    /// Repair every device represented in a merged file. This lets a Mac clean up historical
+    /// rows left by another device that is offline or no longer in use.
+    @discardableResult
+    mutating func repairAllCarriedDailyCounts() -> [String: [String]] {
+        var repairedByDevice: [String: [String]] = [:]
+        for deviceID in devices.keys.sorted() {
+            let repairedDates = repairCarriedDailyCounts(for: deviceID)
+            if !repairedDates.isEmpty {
+                repairedByDevice[deviceID] = repairedDates
+            }
+        }
+        return repairedByDevice
+    }
+
     mutating func pruneAllDevices(keepingDays: Int = 60) {
         for deviceID in devices.keys {
             devices[deviceID]?.pruneOldData(keepingDays: keepingDays)
