@@ -10,8 +10,10 @@ struct SyncDataTests {
         repairsEveryDeviceAndIsIdempotent()
         doesNotRepairNonConsecutiveOrNonMatchingData()
         preservesResetGenerationAsCountAdvances()
+        repairedSyncRowRejectsStaleLocalCarry()
+        repairedSyncRowKeepsLivePostRepairKeys()
         compactCountUsesAtMostThreeSignificantDigits()
-        print("InputStats model tests: 8 passed")
+        print("InputStats model tests: 10 passed")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -99,6 +101,42 @@ struct SyncDataTests {
 
         expect(device.dailyCounts["2026-09-15"]?.count == 25, "count did not advance")
         expect(device.dailyCounts["2026-09-15"]?.resetAt == 200, "count advance lost reset generation")
+    }
+
+    private static func repairedSyncRowRejectsStaleLocalCarry() {
+        var device = DeviceData()
+        device.dailyCounts["2026-09-15"] = DailyCount(
+            count: 40,
+            appCounts: ["app": 40],
+            resetAt: 200
+        )
+
+        let reconciled = device.reconcileLocalSnapshot(
+            count: 140,
+            appCounts: ["app": 40],
+            for: "2026-09-15"
+        )
+
+        expect(reconciled.count == 40, "stale UserDefaults carry beat repaired sync row")
+        expect(reconciled.appCounts == ["app": 40], "repaired app totals changed")
+    }
+
+    private static func repairedSyncRowKeepsLivePostRepairKeys() {
+        var device = DeviceData()
+        device.dailyCounts["2026-09-15"] = DailyCount(
+            count: 40,
+            appCounts: ["app": 40],
+            resetAt: 200
+        )
+
+        let reconciled = device.reconcileLocalSnapshot(
+            count: 55,
+            appCounts: ["app": 55],
+            for: "2026-09-15"
+        )
+
+        expect(reconciled.count == 55, "live keys recorded after repair were discarded")
+        expect(reconciled.appCounts == ["app": 55], "live app totals were discarded")
     }
 
     private static func compactCountUsesAtMostThreeSignificantDigits() {
