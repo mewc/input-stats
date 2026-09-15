@@ -134,6 +134,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         cloudSync.onStateChange = { [weak self] in self?.rebuildMenu() }
         cloudSync.onPulled = { [weak self] pulled in self?.handleCloudPull(pulled) }
         if cloudSync.isConnected {
+            cloudSync.refreshDeviceIdentityIfNeeded()
             pushToCloud()
             cloudSync.pull()
         }
