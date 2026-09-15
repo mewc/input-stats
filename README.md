@@ -9,8 +9,10 @@ drilldown (down to 5-second blocks).
 Maintained by [mewc](https://mewc.info). For more, see [mewc.info](https://mewc.info)
 and [drummerduck.com](https://drummerduck.com).
 
-> **Privacy:** all input counts are stored locally on your Mac (SQLite + iCloud sync of your own
-> aggregate totals). Keystrokes themselves are never recorded — only per-app, per-interval counts.
+> **Privacy:** raw five-second input buckets stay local on your Mac. If you opt in with Google,
+> numeric one-minute summaries and daily totals sync to your private account. Keystrokes themselves
+> are never recorded. The app never captures characters, key codes, window titles, URLs, clipboard
+> contents, screenshots, or raw input events. [Full privacy details](https://input-stats.drummerduck.com/privacy).
 
 ## Install
 
@@ -36,7 +38,8 @@ No notarized release / Homebrew cask — this is a personal public fork distribu
 - **Timeseries drilldown** — span picker (1h–30d) with resolution down to 5s blocks, gated so wide
   windows can't render a punishing number of points
 - Start at login
-- Optional Google sign-in for account-backed sync, with visible retry and expired-session states
+- Free Google login for account-backed sync and a private web dashboard with per-app analytics
+- De-identified community analytics using coarse app categories and a 20-account publication threshold
 
 ## Permissions
 
@@ -59,6 +62,12 @@ Accessibility permission is required to count input. You'll be prompted on first
 `repair-data.sh` scans every device in the merged history. It only changes rows matching the exact
 carried-count fingerprint, prints each proposed correction, and leaves the source untouched unless
 `--apply` is supplied. Use `--file PATH` to inspect a copied or alternate sync JSON file.
+
+When account sync is enabled, the app automatically backfills up to 30 days of active one-minute
+summaries in retry-safe batches. Older daily key/app history remains available through the existing
+daily sync data, so enabling the dashboard does not throw away prior history. You can also preview
+and apply the carried-count repair from **Dashboard → Data**, where every applied repair creates a
+30-day restore point first.
 
 ## Releasing
 

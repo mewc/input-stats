@@ -7,9 +7,12 @@ import SQLite3
 /// `move` stores accumulated pointer travel distance in pixels; all others are event counts.
 enum EventKind: Int, CaseIterable, Identifiable {
     case key = 0
+    /// Legacy click rows and all left clicks use raw value 1.
     case click = 1
     case scroll = 2
+    case rightClick = 3
     case move = 4
+    case otherClick = 5
 
     var id: Int { rawValue }
 
@@ -18,12 +21,16 @@ enum EventKind: Int, CaseIterable, Identifiable {
         case .key: return "Keys"
         case .click: return "Clicks"
         case .scroll: return "Scroll"
+        case .rightClick: return "Right clicks"
         case .move: return "Movement"
+        case .otherClick: return "Other clicks"
         }
     }
 
     /// Movement is a distance (pixels), not a count — charted separately.
     var isDistance: Bool { self == .move }
+
+    static let clickKinds: [EventKind] = [.click, .rightClick, .otherClick]
 }
 
 // SQLite wants this destructor for transient (Swift-owned) strings bound to statements.
@@ -61,6 +68,35 @@ final class EventStore {
     struct AppSeriesPoint: Identifiable {
         let id = UUID()
         let date: Date
+        let app: String
+        let value: Int
+    }
+
+    struct MinuteAppCount {
+        let bundleID: String
+        let keys: Int
+    }
+
+    struct MinuteBucket {
+        let startedAt: Date
+        let utcOffsetMinutes: Int
+        let keys: Int
+        let clicksLeft: Int
+        let clicksRight: Int
+        let clicksOther: Int
+        let scrollTicks: Int
+        let pointerDistance: Int
+        let apps: [MinuteAppCount]
+    }
+
+    struct MinuteExport {
+        let buckets: [MinuteBucket]
+        let scannedThrough: Int
+    }
+
+    struct MinuteRow {
+        let minute: Int
+        let kind: Int
         let app: String
         let value: Int
     }
@@ -159,6 +195,103 @@ final class EventStore {
     /// Block until all queued writes have drained (used on app quit).
     func flushAndWait() {
         queue.sync {}
+    }
+
+    /// Export privacy-safe, completed minute summaries for cloud upload. The
+    /// caller advances to `scannedThrough` even when a range contains no input,
+    /// so long idle periods do not stall the durable upload cursor.
+    func minuteExport(startBucket: Int,
+                      endBucket: Int,
+                      completion: @escaping (MinuteExport) -> Void) {
+        queue.async { [weak self] in
+            let result = self?.minuteExportLocked(startBucket: startBucket, endBucket: endBucket)
+                ?? MinuteExport(buckets: [], scannedThrough: endBucket)
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    private func minuteExportLocked(startBucket: Int, endBucket: Int) -> MinuteExport {
+        guard let db, endBucket > startBucket else {
+            return MinuteExport(buckets: [], scannedThrough: endBucket)
+        }
+        let sql = """
+            SELECT (bucket / 60) * 60 AS minute, kind, app, SUM(count)
+            FROM events
+            WHERE bucket >= ? AND bucket < ?
+            GROUP BY minute, kind, app
+            ORDER BY minute, kind, app;
+            """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            return MinuteExport(buckets: [], scannedThrough: startBucket)
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, Int64(startBucket))
+        sqlite3_bind_int64(stmt, 2, Int64(endBucket))
+
+        var rows: [MinuteRow] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            rows.append(MinuteRow(
+                minute: Int(sqlite3_column_int64(stmt, 0)),
+                kind: Int(sqlite3_column_int(stmt, 1)),
+                app: String(cString: sqlite3_column_text(stmt, 2)),
+                value: Int(sqlite3_column_int64(stmt, 3))
+            ))
+        }
+        let buckets = Self.foldMinuteRows(rows) { date in
+            TimeZone.current.secondsFromGMT(for: date) / 60
+        }
+        return MinuteExport(buckets: buckets, scannedThrough: endBucket)
+    }
+
+    /// Pure folding seam used by both SQLite export and zero-dependency tests.
+    static func foldMinuteRows(_ rows: [MinuteRow],
+                               utcOffsetMinutes: (Date) -> Int) -> [MinuteBucket] {
+        struct Accum {
+            var keys = 0
+            var clicksLeft = 0
+            var clicksRight = 0
+            var clicksOther = 0
+            var scrollTicks = 0
+            var pointerDistance = 0
+            var apps: [String: Int] = [:]
+        }
+        var byMinute: [Int: Accum] = [:]
+        for row in rows {
+            var accum = byMinute[row.minute] ?? Accum()
+            switch EventKind(rawValue: row.kind) {
+            case .key:
+                accum.keys += row.value
+                accum.apps[row.app, default: 0] += row.value
+            case .click: accum.clicksLeft += row.value
+            case .rightClick: accum.clicksRight += row.value
+            case .otherClick: accum.clicksOther += row.value
+            case .scroll: accum.scrollTicks += row.value
+            case .move: accum.pointerDistance += row.value
+            case nil: break
+            }
+            byMinute[row.minute] = accum
+        }
+
+        let buckets = byMinute.keys.sorted().compactMap { minute -> MinuteBucket? in
+            guard let value = byMinute[minute] else { return nil }
+            let date = Date(timeIntervalSince1970: TimeInterval(minute))
+            let apps = value.apps.keys.sorted().map {
+                MinuteAppCount(bundleID: $0, keys: value.apps[$0] ?? 0)
+            }
+            return MinuteBucket(
+                startedAt: date,
+                utcOffsetMinutes: utcOffsetMinutes(date),
+                keys: value.keys,
+                clicksLeft: value.clicksLeft,
+                clicksRight: value.clicksRight,
+                clicksOther: value.clicksOther,
+                scrollTicks: value.scrollTicks,
+                pointerDistance: value.pointerDistance,
+                apps: apps
+            )
+        }
+        return buckets
     }
 
     // MARK: Pruning

@@ -1,0 +1,26 @@
+"$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
+
+[scripts]
+setup = "./scripts/conductor-setup.sh"
+run_mode = "concurrent"
+
+[scripts.run.app-dev]
+available_in = [ "local" ]
+command = "./dev.sh --run"
+default = true
+icon = "keyboard"
+
+[scripts.run.app-tests]
+available_in = [ "local" ]
+command = "./test.sh"
+icon = "test-tube"
+
+[scripts.run.cloud-dev]
+available_in = [ "local" ]
+command = "cd .context/input-stats-cloud && npm exec next dev -- -p $CONDUCTOR_PORT"
+icon = "cloud"
+
+[scripts.run.cloud-check]
+available_in = [ "local" ]
+command = "npm --prefix .context/input-stats-cloud test && npm --prefix .context/input-stats-cloud run typecheck"
+icon = "badge-check"

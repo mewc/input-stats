@@ -1,5 +1,36 @@
 import Foundation
 
+// MARK: - Privacy-safe cloud minute payload
+
+struct MinuteClicksPayload: Codable {
+    let left: Int
+    let right: Int
+    let other: Int
+}
+
+struct MinuteAppPayload: Codable {
+    let bundleId: String
+    let keys: Int
+}
+
+struct MinuteBucketPayload: Codable {
+    let startedAt: Date
+    let utcOffsetMinutes: Int
+    let keys: Int
+    let clicks: MinuteClicksPayload
+    let scrollTicks: Int
+    let pointerDistance: Int
+    let apps: [MinuteAppPayload]
+}
+
+struct MinuteBatchPayload: Codable {
+    let schemaVersion: Int
+    let clientDeviceId: String
+    let appVersion: String
+    let osVersion: String
+    let buckets: [MinuteBucketPayload]
+}
+
 // MARK: - Sync Data Models
 
 struct DailyCount: Codable {
