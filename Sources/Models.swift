@@ -41,6 +41,35 @@ struct DeviceData: Codable {
         dailyCounts[date]?.appCounts ?? [:]
     }
 
+    /// Reconcile UserDefaults with a reset-protected sync row. Older app versions can retain the
+    /// carried total locally after the iCloud row is repaired; the per-app sum identifies that
+    /// stale snapshot without discarding genuine keystrokes recorded after the repair.
+    func reconcileLocalSnapshot(count localCount: Int,
+                                appCounts localAppCounts: [String: Int],
+                                for date: String) -> (count: Int, appCounts: [String: Int]) {
+        guard let stored = dailyCounts[date] else {
+            return (localCount, localAppCounts)
+        }
+
+        let localTrackedCount = localAppCounts.values.reduce(0, +)
+        let localStillContainsCarry = stored.resetAt != nil
+            && !localAppCounts.isEmpty
+            && localCount > localTrackedCount
+
+        if localStillContainsCarry {
+            if localTrackedCount >= stored.count {
+                return (localTrackedCount, localAppCounts)
+            }
+            return (stored.count, stored.appCounts ?? [:])
+        }
+
+        if localCount > stored.count {
+            return (localCount, localAppCounts)
+        }
+        let storedAppCounts = stored.appCounts ?? [:]
+        return (stored.count, storedAppCounts.isEmpty ? localAppCounts : storedAppCounts)
+    }
+
     mutating func pruneOldData(keepingDays: Int = 60) {
         let calendar = Calendar.current
         let cutoffDate = calendar.date(byAdding: .day, value: -keepingDays, to: Date())!

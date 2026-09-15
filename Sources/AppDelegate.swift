@@ -329,40 +329,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
 
             let repairedDates = updated.repairAllCarriedDailyCounts()[self.deviceID] ?? []
-            let repairedToday = repairedDates.contains(today)
-
-            if repairedToday {
-                // The sync history proves this day is part of a carried-count chain. The local
-                // per-app sum may be newer than the last file write, so use it when available.
-                let repairedCount = self.localAppCounts.isEmpty
-                    ? (updated.devices[self.deviceID]?.count(for: today) ?? 0)
-                    : self.localAppCounts.values.reduce(0, +)
-                self.localKeystrokeCount = repairedCount
-                if self.localAppCounts.isEmpty {
-                    self.localAppCounts = updated.devices[self.deviceID]?.appCounts(for: today) ?? [:]
-                }
-                updated.devices[self.deviceID]?.setCount(
-                    repairedCount,
-                    for: today,
-                    appCounts: self.localAppCounts.isEmpty ? nil : self.localAppCounts,
-                    reset: true
-                )
-            }
-
-            let existingCount = updated.devices[self.deviceID]?.count(for: today) ?? 0
-
-            if repairedToday {
-                // Keep the repaired local total; the reset generation makes it authoritative.
-            } else if self.localKeystrokeCount > existingCount {
-                updated.devices[self.deviceID]?.setCount(self.localKeystrokeCount, for: today, appCounts: self.localAppCounts.isEmpty ? nil : self.localAppCounts)
-            } else {
-                self.localKeystrokeCount = existingCount
-                // Also load app counts from cloud if available
-                let cloudAppCounts = updated.devices[self.deviceID]?.appCounts(for: today) ?? [:]
-                if !cloudAppCounts.isEmpty {
-                    self.localAppCounts = cloudAppCounts
-                }
-            }
+            let reconciled = updated.devices[self.deviceID]!.reconcileLocalSnapshot(
+                count: self.localKeystrokeCount,
+                appCounts: self.localAppCounts,
+                for: today
+            )
+            self.localKeystrokeCount = reconciled.count
+            self.localAppCounts = reconciled.appCounts
+            updated.devices[self.deviceID]?.setCount(
+                reconciled.count,
+                for: today,
+                appCounts: reconciled.appCounts.isEmpty ? nil : reconciled.appCounts,
+                reset: repairedDates.contains(today)
+            )
 
             updated.pruneAllDevices(keepingDays: 60)
             self.cachedSyncData = updated
