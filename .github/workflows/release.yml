@@ -104,8 +104,8 @@ jobs:
           </rss>
           EOF
           # Publish the feed on main (SUFeedURL serves raw main/appcast.xml).
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "mewc"
+          git config user.email "mikecarter771@gmail.com"
           git add appcast.xml
           git commit -m "chore(release): appcast for v${VERSION}"
           git push origin HEAD:main
