@@ -6,6 +6,7 @@
 - **Build:**
   - `./build.sh` - dev build (yellow keyboard icon, "-dev" version suffix)
   - `./build.sh --release` - production build
+- **Test:** `./test.sh` - zero-dependency Swift model and sync regression tests
 - **Build, deploy, and restart:**
   ```
   ./build.sh && pkill -f "Input Stats.app" 2>/dev/null; rm -rf "/Applications/Input Stats.app" && cp -r "Input Stats.app" /Applications/ && open "/Applications/Input Stats.app"

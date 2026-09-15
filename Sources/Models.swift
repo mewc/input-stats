@@ -6,11 +6,15 @@ struct DailyCount: Codable {
     var count: Int
     var lastModified: TimeInterval
     var appCounts: [String: Int]?  // bundleID -> count (optional for backwards compatibility)
+    /// A monotonic reset generation. Counts remain max-merged within a generation, while an
+    /// explicit reset or repair can supersede stale higher counts from iCloud/cloud sync.
+    var resetAt: TimeInterval?
 
-    init(count: Int, appCounts: [String: Int]? = nil) {
+    init(count: Int, appCounts: [String: Int]? = nil, resetAt: TimeInterval? = nil) {
         self.count = count
         self.lastModified = Date().timeIntervalSince1970
         self.appCounts = appCounts
+        self.resetAt = resetAt
     }
 }
 
@@ -21,8 +25,12 @@ struct DeviceData: Codable {
         dailyCounts = [:]
     }
 
-    mutating func setCount(_ count: Int, for date: String, appCounts: [String: Int]? = nil) {
-        dailyCounts[date] = DailyCount(count: count, appCounts: appCounts)
+    mutating func setCount(_ count: Int,
+                           for date: String,
+                           appCounts: [String: Int]? = nil,
+                           reset: Bool = false) {
+        let resetAt = reset ? Date().timeIntervalSince1970 : dailyCounts[date]?.resetAt
+        dailyCounts[date] = DailyCount(count: count, appCounts: appCounts, resetAt: resetAt)
     }
 
     func count(for date: String) -> Int {
@@ -135,9 +143,14 @@ struct SyncData: Codable {
 
             for (date, otherDailyCount) in otherDeviceData.dailyCounts {
                 if let existing = devices[deviceID]?.dailyCounts[date] {
-                    if otherDailyCount.count > existing.count {
+                    let existingReset = existing.resetAt ?? 0
+                    let otherReset = otherDailyCount.resetAt ?? 0
+
+                    if otherReset > existingReset {
                         devices[deviceID]?.dailyCounts[date] = otherDailyCount
-                    } else if otherDailyCount.count == existing.count {
+                    } else if otherReset == existingReset && otherDailyCount.count > existing.count {
+                        devices[deviceID]?.dailyCounts[date] = otherDailyCount
+                    } else if otherReset == existingReset && otherDailyCount.count == existing.count {
                         // Same count - merge app counts from both
                         var mergedAppCounts = existing.appCounts ?? [:]
                         if let otherAppCounts = otherDailyCount.appCounts {
@@ -154,10 +167,90 @@ struct SyncData: Codable {
         }
     }
 
+    /// Repair the midnight-rollover bug shipped in v0.1.8. Its fingerprint is exact: on
+    /// consecutive days, `count == previous stored count + sum(appCounts)`. Keep the original
+    /// previous value while walking the chain so every affected day can be repaired in one pass.
+    /// Repaired rows get a reset generation so max-based replicas cannot resurrect bad totals.
+    @discardableResult
+    mutating func repairCarriedDailyCounts(for deviceID: String) -> [String] {
+        guard var device = devices[deviceID] else { return [] }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "yyyy-MM-dd"
+
+        var previousDate: Date?
+        var previousStoredCount: Int?
+        var repairedDates: [String] = []
+
+        for dateKey in device.dailyCounts.keys.sorted() {
+            guard let original = device.dailyCounts[dateKey],
+                  let date = formatter.date(from: dateKey) else { continue }
+
+            defer {
+                previousDate = date
+                previousStoredCount = original.count
+            }
+
+            guard let priorDate = previousDate,
+                  let priorCount = previousStoredCount,
+                  Calendar(identifier: .gregorian).dateComponents([.day], from: priorDate, to: date).day == 1,
+                  let appCounts = original.appCounts,
+                  !appCounts.isEmpty else { continue }
+
+            let trackedCount = appCounts.values.reduce(0, +)
+            guard original.count > trackedCount,
+                  original.count - trackedCount == priorCount else { continue }
+
+            device.dailyCounts[dateKey] = DailyCount(
+                count: trackedCount,
+                appCounts: appCounts,
+                resetAt: Date().timeIntervalSince1970
+            )
+            repairedDates.append(dateKey)
+        }
+
+        devices[deviceID] = device
+        return repairedDates
+    }
+
     mutating func pruneAllDevices(keepingDays: Int = 60) {
         for deviceID in devices.keys {
             devices[deviceID]?.pruneOldData(keepingDays: keepingDays)
         }
+    }
+}
+
+// MARK: - Count Formatting
+
+enum CountFormatter {
+    private static let compactNumberFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.numberStyle = .decimal
+        formatter.usesSignificantDigits = true
+        formatter.minimumSignificantDigits = 1
+        formatter.maximumSignificantDigits = 3
+        formatter.usesGroupingSeparator = false
+        return formatter
+    }()
+
+    /// Up to three significant digits plus a suffix, so the status item stays compact.
+    static func compact(_ count: Int) -> String {
+        let magnitude: Double
+        let suffix: String
+        if count >= 999_500 {
+            magnitude = Double(count) / 1_000_000
+            suffix = "M"
+        } else if count >= 1_000 {
+            magnitude = Double(count) / 1_000
+            suffix = "k"
+        } else {
+            return "\(count)"
+        }
+
+        return (compactNumberFormatter.string(from: NSNumber(value: magnitude)) ?? "\(magnitude)") + suffix
     }
 }
 

@@ -33,8 +33,21 @@ final class CloudSync {
     private let tokenAccount = "deviceToken"
     private let secretAccount = "signingSecret"
     private let emailKey = "cloudAccountEmail"
+    private let stateLock = NSLock()
+    private var storedError: String?
 
-    private let session = URLSession(configuration: .default)
+    var lastError: String? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return storedError
+    }
+
+    private let session: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 30
+        return URLSession(configuration: configuration)
+    }()
 
     // MARK: State + callbacks (invoked on the main queue)
 
@@ -46,23 +59,33 @@ final class CloudSync {
     var deviceToken: String? { Keychain.get(tokenAccount) }
     var signingSecret: String? { Keychain.get(secretAccount) }
     var isConnected: Bool { deviceToken != nil && signingSecret != nil }
+    var isConnecting: Bool { deviceToken != nil && signingSecret == nil }
     var accountEmail: String? { UserDefaults.standard.string(forKey: emailKey) }
 
     // MARK: Login
 
     func beginLogin() {
+        setStoredError(nil)
+        onStateChange?()
         NSWorkspace.shared.open(baseURL.appendingPathComponent("connect"))
     }
 
     /// Handle the `inputstats://connected?token=…` redirect from the browser.
     func handleCallback(url: URL) {
-        guard url.host == "connected",
+        guard url.scheme == "inputstats",
+              url.host == "connected",
               let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let token = comps.queryItems?.first(where: { $0.name == "token" })?.value,
               !token.isEmpty else {
             return
         }
-        Keychain.set(token, for: tokenAccount)
+        Keychain.delete(secretAccount)
+        guard Keychain.set(token, for: tokenAccount) else {
+            reportError("Could not save the sign-in token.")
+            return
+        }
+        setStoredError(nil)
+        DispatchQueue.main.async { self.onStateChange?() }
         provision(token: token)
     }
 
@@ -70,6 +93,7 @@ final class CloudSync {
         Keychain.delete(tokenAccount)
         Keychain.delete(secretAccount)
         UserDefaults.standard.removeObject(forKey: emailKey)
+        setStoredError(nil)
         DispatchQueue.main.async { self.onStateChange?() }
     }
 
@@ -79,14 +103,28 @@ final class CloudSync {
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
-        session.dataTask(with: req) { [weak self] data, resp, _ in
-            guard let self = self,
-                  let http = resp as? HTTPURLResponse, http.statusCode == 200,
-                  let data = data,
+        session.dataTask(with: req) { [weak self] data, resp, error in
+            guard let self else { return }
+            guard error == nil,
+                  let http = resp as? HTTPURLResponse,
+                  http.statusCode == 200,
+                  let data,
                   let body = try? JSONDecoder().decode(ProvisionResponse.self, from: data) else {
+                if (resp as? HTTPURLResponse)?.statusCode == 401 {
+                    self.expireCredentials()
+                } else {
+                    self.reportError("Cloud sign-in could not be completed.")
+                }
                 return
             }
-            Keychain.set(body.signingSecret, for: self.secretAccount)
+            guard Keychain.set(body.signingSecret, for: self.secretAccount) else {
+                self.reportError("Could not save the sync key.")
+                return
+            }
+            if let email = body.email, !email.isEmpty {
+                UserDefaults.standard.set(email, forKey: self.emailKey)
+            }
+            self.setStoredError(nil)
             DispatchQueue.main.async {
                 self.onStateChange?()
                 self.pull()
@@ -99,9 +137,16 @@ final class CloudSync {
     /// Upload this device's counts. `deviceData` should be a SyncData containing
     /// only this device's entry (server merges by max, so re-asserting others is
     /// unnecessary and risks resurrecting a reset elsewhere).
-    func push(_ deviceData: SyncData) {
-        guard let token = deviceToken, let secret = signingSecret else { return }
-        guard let body = try? JSONEncoder().encode(deviceData) else { return }
+    func push(_ deviceData: SyncData, completion: ((Bool) -> Void)? = nil) {
+        guard let token = deviceToken, let secret = signingSecret else {
+            completion?(false)
+            return
+        }
+        guard let body = try? JSONEncoder().encode(deviceData) else {
+            reportError("Could not encode sync data.")
+            completion?(false)
+            return
+        }
 
         var req = URLRequest(url: baseURL.appendingPathComponent("api/sync"))
         req.httpMethod = "POST"
@@ -110,13 +155,26 @@ final class CloudSync {
         req.setValue(Self.signature(body: body, secret: secret), forHTTPHeaderField: "X-Signature")
         req.httpBody = body
 
-        session.dataTask(with: req) { [weak self] data, resp, _ in
-            guard let self = self,
-                  let http = resp as? HTTPURLResponse, http.statusCode == 200,
-                  let data = data,
-                  let wrapped = try? JSONDecoder().decode(SyncEnvelope.self, from: data) else {
+        session.dataTask(with: req) { [weak self] data, resp, error in
+            guard let self else {
+                completion?(false)
                 return
             }
+            guard error == nil,
+                  let http = resp as? HTTPURLResponse,
+                  http.statusCode == 200,
+                  let data,
+                  let wrapped = try? JSONDecoder().decode(SyncEnvelope.self, from: data) else {
+                if (resp as? HTTPURLResponse)?.statusCode == 401 {
+                    self.expireCredentials()
+                } else {
+                    self.reportError("Cloud sync failed. It will retry automatically.")
+                }
+                completion?(false)
+                return
+            }
+            self.clearError()
+            completion?(true)
             DispatchQueue.main.async { self.onPulled?(wrapped.data) }
         }.resume()
     }
@@ -126,15 +184,48 @@ final class CloudSync {
         var req = URLRequest(url: baseURL.appendingPathComponent("api/sync"))
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
-        session.dataTask(with: req) { [weak self] data, resp, _ in
-            guard let self = self,
-                  let http = resp as? HTTPURLResponse, http.statusCode == 200,
-                  let data = data,
+        session.dataTask(with: req) { [weak self] data, resp, error in
+            guard let self else { return }
+            guard error == nil,
+                  let http = resp as? HTTPURLResponse,
+                  http.statusCode == 200,
+                  let data,
                   let wrapped = try? JSONDecoder().decode(SyncEnvelope.self, from: data) else {
+                if (resp as? HTTPURLResponse)?.statusCode == 401 {
+                    self.expireCredentials()
+                } else {
+                    self.reportError("Cloud sync failed. It will retry automatically.")
+                }
                 return
             }
+            self.clearError()
             DispatchQueue.main.async { self.onPulled?(wrapped.data) }
         }.resume()
+    }
+
+    private func clearError() {
+        guard lastError != nil else { return }
+        setStoredError(nil)
+        DispatchQueue.main.async { self.onStateChange?() }
+    }
+
+    private func reportError(_ message: String) {
+        setStoredError(message)
+        DispatchQueue.main.async { self.onStateChange?() }
+    }
+
+    private func expireCredentials() {
+        Keychain.delete(tokenAccount)
+        Keychain.delete(secretAccount)
+        UserDefaults.standard.removeObject(forKey: emailKey)
+        setStoredError("Cloud session expired. Sign in again.")
+        DispatchQueue.main.async { self.onStateChange?() }
+    }
+
+    private func setStoredError(_ message: String?) {
+        stateLock.lock()
+        storedError = message
+        stateLock.unlock()
     }
 
     // MARK: Signing
@@ -157,6 +248,7 @@ private struct ProvisionResponse: Decodable {
     let deviceId: String
     let userId: String
     let signingSecret: String
+    let email: String?
 }
 
 private struct SyncEnvelope: Decodable {

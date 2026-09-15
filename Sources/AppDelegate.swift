@@ -14,6 +14,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var permissionCheckTimer: Timer?
     private var permissionCheckTicks = 0
     private var syncTimer: Timer?
+    private var dayChangeTimer: Timer?
     private var fileMonitor: DispatchSourceFileSystemObject?
     private var lastSyncTime: Date?
     // in-memory cache; disk syncs happen async
@@ -41,6 +42,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // The day our in-memory counts belong to. Lets `checkDayChange()` detect a midnight rollover
     // with a cheap string compare instead of decoding JSON from UserDefaults on every keystroke.
     private var activeDay: String = ""
+    private var menuIsOpen = false
 
     private let deviceID: String = {
         let defaults = UserDefaults.standard
@@ -97,6 +99,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         startSyncTimer()
+        scheduleDayChangeTimer()
         startFileMonitor()
         startFrontmostAppTracking()
         // Listen for update availability, then kick off the GitHub release check + periodic re-check.
@@ -127,7 +130,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         cloudSync.onStateChange = { [weak self] in self?.rebuildMenu() }
         cloudSync.onPulled = { [weak self] pulled in self?.handleCloudPull(pulled) }
-        if cloudSync.isConnected { cloudSync.pull() }
+        if cloudSync.isConnected {
+            pushToCloud()
+            cloudSync.pull()
+        }
     }
 
     @objc private func handleURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent: NSAppleEventDescriptor) {
@@ -137,7 +143,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Upload this device's history (today reflects the live local count) to the cloud.
-    private func pushToCloud() {
+    private func pushToCloud(waitForCompletion: Bool = false) {
+        checkDayChange()
         guard cloudSync.isConnected else { return }
         let today = todayString()
         var payload = SyncData()
@@ -145,7 +152,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         deviceData.dailyCounts = cachedSyncData.devices[deviceID]?.dailyCounts ?? [:]
         deviceData.setCount(localKeystrokeCount, for: today, appCounts: localAppCounts.isEmpty ? nil : localAppCounts)
         payload.devices[deviceID] = deviceData
-        cloudSync.push(payload)
+
+        if waitForCompletion {
+            let finished = DispatchSemaphore(value: 0)
+            cloudSync.push(payload) { _ in finished.signal() }
+            _ = finished.wait(timeout: .now() + 2)
+        } else {
+            cloudSync.push(payload)
+        }
     }
 
     /// Merge a server blob into the in-memory cache + iCloud file and refresh the UI.
@@ -154,14 +168,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let today = todayString()
 
         cachedSyncData.merge(with: pulled)
+        let repairedDates = cachedSyncData.repairCarriedDailyCounts(for: deviceID)
 
         if cachedSyncData.devices[deviceID] == nil {
             cachedSyncData.devices[deviceID] = DeviceData()
         }
-        // If the cloud somehow has a higher count for this device today, adopt it.
+        // If the cloud has a higher count for this device today, adopt it unless this pull just
+        // exposed a carried-total row that we repaired to its per-app sum.
         let cloudToday = cachedSyncData.devices[deviceID]?.count(for: today) ?? 0
-        if cloudToday > localKeystrokeCount {
+        if repairedDates.contains(today) {
+            let cloudAppCounts = cachedSyncData.devices[deviceID]?.appCounts(for: today) ?? [:]
+            let liveTrackedCount = localAppCounts.values.reduce(0, +)
+            if localAppCounts.isEmpty || liveTrackedCount < cloudToday {
+                localKeystrokeCount = cloudToday
+                localAppCounts = cloudAppCounts
+            } else {
+                localKeystrokeCount = liveTrackedCount
+            }
+            saveLocalCount()
+        } else if cloudToday > localKeystrokeCount {
             localKeystrokeCount = cloudToday
+            let cloudAppCounts = cachedSyncData.devices[deviceID]?.appCounts(for: today) ?? [:]
+            if !cloudAppCounts.isEmpty { localAppCounts = cloudAppCounts }
             saveLocalCount()
         }
         cachedSyncData.devices[deviceID]?.setCount(localKeystrokeCount, for: today, appCounts: localAppCounts.isEmpty ? nil : localAppCounts)
@@ -174,13 +202,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Fold the pulled data into the iCloud file too, so the History window stays consistent.
         if let url = syncFileURL {
+            let reconciled = cachedSyncData
             syncQueue.async {
                 self.coordinatedSync(to: url) { existing in
                     var merged = existing
-                    merged.merge(with: pulled)
+                    merged.merge(with: reconciled)
                     return merged
                 }
             }
+        }
+
+        if !repairedDates.isEmpty {
+            pushToCloud()
         }
     }
 
@@ -216,6 +249,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         fileMonitor?.cancel()
         syncTimer?.invalidate()
+        dayChangeTimer?.invalidate()
         permissionCheckTimer?.invalidate()
         updateCheckTimer?.invalidate()
         bucketFlushTimer?.invalidate()
@@ -229,6 +263,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         checkDayChange()
         saveLocalCount()
+
+        // URLSession tasks are normally cancelled when the process exits. Give the final cloud
+        // upload a short bounded window so quitting fulfils the same sync guarantee as iCloud.
+        pushToCloud(waitForCompletion: true)
 
         guard let url = syncFileURL else { return }
         let today = todayString()
@@ -282,7 +320,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
-        coordinatedSync(to: url) { syncData in
+        coordinatedSync(to: url, forceMerge: false) { syncData in
             var updated = syncData
             let today = self.todayString()
 
@@ -290,11 +328,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 updated.devices[self.deviceID] = DeviceData()
             }
 
+            let repairedDates = updated.repairCarriedDailyCounts(for: self.deviceID)
+            let repairedToday = repairedDates.contains(today)
+
+            if repairedToday {
+                // The sync history proves this day is part of a carried-count chain. The local
+                // per-app sum may be newer than the last file write, so use it when available.
+                let repairedCount = self.localAppCounts.isEmpty
+                    ? (updated.devices[self.deviceID]?.count(for: today) ?? 0)
+                    : self.localAppCounts.values.reduce(0, +)
+                self.localKeystrokeCount = repairedCount
+                if self.localAppCounts.isEmpty {
+                    self.localAppCounts = updated.devices[self.deviceID]?.appCounts(for: today) ?? [:]
+                }
+                updated.devices[self.deviceID]?.setCount(
+                    repairedCount,
+                    for: today,
+                    appCounts: self.localAppCounts.isEmpty ? nil : self.localAppCounts,
+                    reset: true
+                )
+            }
+
             let existingCount = updated.devices[self.deviceID]?.count(for: today) ?? 0
 
-            if self.localKeystrokeCount == 0 {
-                // Fresh start for today - reset cloud to 0, don't pull corrupted data
-                updated.devices[self.deviceID]?.setCount(0, for: today, appCounts: nil)
+            if repairedToday {
+                // Keep the repaired local total; the reset generation makes it authoritative.
             } else if self.localKeystrokeCount > existingCount {
                 updated.devices[self.deviceID]?.setCount(self.localKeystrokeCount, for: today, appCounts: self.localAppCounts.isEmpty ? nil : self.localAppCounts)
             } else {
@@ -369,22 +427,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func syncToCloud() {
+        // This must run before creating a cloud payload. The old order labelled yesterday's
+        // cumulative count with today's date during the first timer tick after midnight.
+        checkDayChange()
+
         // Best-effort push to the cloud backend (no-op unless the user connected).
         pushToCloud()
 
         guard let url = syncFileURL else { return }
 
-        checkDayChange()
-
         let today = todayString()
         let currentLocalCount = localKeystrokeCount
         let currentAppCounts = localAppCounts
+        let currentCache = cachedSyncData
 
         syncQueue.async { [weak self] in
             guard let self = self else { return }
 
             self.coordinatedSync(to: url) { existingData in
                 var syncData = existingData
+                // Preserve reset generations already accepted in memory. A delayed iCloud
+                // conflict containing the old higher count must not resurrect it.
+                syncData.merge(with: currentCache)
 
                 if syncData.devices[self.deviceID] == nil {
                     syncData.devices[self.deviceID] = DeviceData()
@@ -463,18 +527,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             let syncData = self.loadSyncData(from: url)
 
-            if let cloudDeviceData = syncData.devices[self.deviceID] {
-                let cloudCount = cloudDeviceData.count(for: today)
-                if cloudCount > self.localKeystrokeCount {
-                    DispatchQueue.main.async {
+            DispatchQueue.main.async {
+                // Merge instead of replacing the cache so a stale iCloud notification cannot
+                // discard a newer reset generation learned locally or from the SaaS service.
+                var reconciled = self.cachedSyncData
+                reconciled.merge(with: syncData)
+                let repairedDates = reconciled.repairCarriedDailyCounts(for: self.deviceID)
+
+                if let cloudDeviceData = reconciled.devices[self.deviceID] {
+                    let cloudCount = cloudDeviceData.count(for: today)
+                    if repairedDates.contains(today) {
+                        let cloudAppCounts = cloudDeviceData.appCounts(for: today)
+                        let liveTrackedCount = self.localAppCounts.values.reduce(0, +)
+                        if self.localAppCounts.isEmpty || liveTrackedCount < cloudCount {
+                            self.localKeystrokeCount = cloudCount
+                            self.localAppCounts = cloudAppCounts
+                        } else {
+                            self.localKeystrokeCount = liveTrackedCount
+                        }
+                        self.saveLocalCount()
+                    }
+                    if cloudCount > self.localKeystrokeCount {
                         self.localKeystrokeCount = cloudCount
+                        let cloudAppCounts = cloudDeviceData.appCounts(for: today)
+                        if !cloudAppCounts.isEmpty { self.localAppCounts = cloudAppCounts }
                         self.saveLocalCount()
                     }
                 }
-            }
 
-            DispatchQueue.main.async {
-                self.cachedSyncData = syncData
+                self.cachedSyncData = reconciled
                 // Re-apply local count — may have advanced while reading file
                 if self.cachedSyncData.devices[self.deviceID] == nil {
                     self.cachedSyncData.devices[self.deviceID] = DeviceData()
@@ -485,6 +566,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if reconciledTotal != self.totalKeystrokeCount {
                     self.totalKeystrokeCount = reconciledTotal
                     self.updateMenuBarTitle()
+                }
+
+                if !repairedDates.isEmpty {
+                    self.pushToCloud()
+                    let repaired = self.cachedSyncData
+                    self.syncQueue.async {
+                        self.coordinatedSync(to: url) { existing in
+                            var merged = existing
+                            merged.merge(with: repaired)
+                            return merged
+                        }
+                    }
                 }
             }
         }
@@ -497,6 +590,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.syncToCloud()
             self?.cloudSync.pull()
         }
+    }
+
+    /// Fire at the next local midnight instead of waiting for a keypress or the five-minute sync.
+    private func scheduleDayChangeTimer() {
+        dayChangeTimer?.invalidate()
+        let calendar = Calendar.current
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: Date()))!
+        dayChangeTimer = Timer(fire: tomorrow, interval: 0, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.checkDayChange()
+            self.updateMenuBarTitle()
+            self.rebuildMenu()
+            self.pushToCloud()
+            self.scheduleDayChangeTimer()
+        }
+        RunLoop.main.add(dayChangeTimer!, forMode: .common)
     }
 
     private func startPermissionCheckTimer() {
@@ -535,6 +644,40 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func checkDayChange() {
         let today = todayString()
         guard today != activeDay else { return }
+
+        // Finalize the old day before zeroing memory. Without this, the last unsaved (<50) keys
+        // before midnight could disappear if the five-minute sync had not run yet.
+        if !activeDay.isEmpty {
+            let completedDay = activeDay
+            let completedCount = localKeystrokeCount
+            let completedAppCounts = localAppCounts
+            if cachedSyncData.devices[deviceID] == nil {
+                cachedSyncData.devices[deviceID] = DeviceData()
+            }
+            cachedSyncData.devices[deviceID]?.setCount(
+                completedCount,
+                for: completedDay,
+                appCounts: completedAppCounts.isEmpty ? nil : completedAppCounts
+            )
+            if let url = syncFileURL {
+                coordinatedSync(to: url) { existing in
+                    var updated = existing
+                    if updated.devices[self.deviceID] == nil {
+                        updated.devices[self.deviceID] = DeviceData()
+                    }
+                    let storedCount = updated.devices[self.deviceID]?.count(for: completedDay) ?? 0
+                    if completedCount > storedCount {
+                        updated.devices[self.deviceID]?.setCount(
+                            completedCount,
+                            for: completedDay,
+                            appCounts: completedAppCounts.isEmpty ? nil : completedAppCounts
+                        )
+                    }
+                    return updated
+                }
+            }
+        }
+
         activeDay = today
         localKeystrokeCount = 0
         localAppCounts = [:]
@@ -559,20 +702,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func formatCount(_ count: Int) -> String {
-        if count >= 1_000_000 {
-            let m = Double(count) / 1_000_000.0
-            return String(format: "%.2fM", m)
-        } else if count >= 1000 {
-            let k = Double(count) / 1000.0
-            return String(format: "%.2fk", k)
-        }
-        return "\(count)"
+        CountFormatter.compact(count)
     }
 
-    private func formatCountFull(_ count: Int) -> String {
+    private static let fullCountFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
-        return formatter.string(from: NSNumber(value: count)) ?? "\(count)"
+        return formatter
+    }()
+
+    private func formatCountFull(_ count: Int) -> String {
+        AppDelegate.fullCountFormatter.string(from: NSNumber(value: count)) ?? "\(count)"
     }
 
     private struct SectionStats {
@@ -870,16 +1010,46 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Cloud-sync menu row: a "Sign in to Sync…" CTA, or the connected account + sign-out.
     private func addCloudSyncSection() {
         if cloudSync.isConnected {
-            let label = cloudSync.accountEmail.map { "Synced: \($0)" } ?? "Synced to cloud"
+            let label: String
+            if let error = cloudSync.lastError {
+                label = "Cloud sync issue: \(error)"
+            } else {
+                label = cloudSync.accountEmail.map { "Synced: \($0)" } ?? "Synced to cloud"
+            }
             let status = NSMenuItem(title: label, action: nil, keyEquivalent: "")
             status.isEnabled = false
             theMenu.addItem(status)
+            if cloudSync.lastError != nil {
+                theMenu.addItem(NSMenuItem(
+                    title: "Retry Cloud Sync",
+                    action: #selector(retryCloudSync),
+                    keyEquivalent: ""
+                ))
+            }
             theMenu.addItem(NSMenuItem(
                 title: "Sign Out of Cloud Sync",
                 action: #selector(signOutOfCloud),
                 keyEquivalent: ""
             ))
+        } else if cloudSync.isConnecting {
+            let status = NSMenuItem(
+                title: cloudSync.lastError ?? "Finishing cloud sign-in…",
+                action: nil,
+                keyEquivalent: ""
+            )
+            status.isEnabled = false
+            theMenu.addItem(status)
+            theMenu.addItem(NSMenuItem(
+                title: "Try Cloud Sign-In Again…",
+                action: #selector(signInToCloud),
+                keyEquivalent: ""
+            ))
         } else {
+            if let error = cloudSync.lastError {
+                let status = NSMenuItem(title: error, action: nil, keyEquivalent: "")
+                status.isEnabled = false
+                theMenu.addItem(status)
+            }
             theMenu.addItem(NSMenuItem(
                 title: "Sign in to Sync\u{2026}",
                 action: #selector(signInToCloud),
@@ -896,13 +1066,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         cloudSync.signOut()
     }
 
+    @objc private func retryCloudSync() {
+        pushToCloud()
+        cloudSync.pull()
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
+        menuIsOpen = true
         checkDayChange()
         // Re-check live so a grant that read false at launch never leaves a stale CTA in the menu.
         if !hasAccessibilityPermission && AXIsProcessTrusted() {
             handlePermissionGranted()
         }
         rebuildMenu()
+        updateMenuBarTitle()
         // Clicks/Distance come from the local SQLite store; fetch async and re-render in place.
         eventStore.dailyTotals(kinds: [.click, .move]) { [weak self] totals in
             guard let self = self else { return }
@@ -912,6 +1089,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    func menuDidClose(_ menu: NSMenu) {
+        menuIsOpen = false
+        updateMenuBarTitle()
+    }
+
     // The menu-bar icons never change at runtime (they depend only on permission state), so build
     // each once and reuse it — recreating an NSImage + drawingHandler on every keystroke was pure churn.
     private lazy var keyboardIcon: NSImage = createKeyboardIcon()
@@ -919,7 +1101,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let menuBarFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
 
     private func updateMenuBarTitle() {
-        let title = formatCount(totalKeystrokeCount) + (isDevBuild ? " (dev)" : "")
+        let count = menuIsOpen ? formatCountFull(totalKeystrokeCount) : formatCount(totalKeystrokeCount)
+        let title = count + (isDevBuild ? " (dev)" : "")
 
         DispatchQueue.main.async {
             guard let button = self.statusItem?.button else { return }
@@ -991,9 +1174,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if cachedSyncData.devices[deviceID] == nil {
                 cachedSyncData.devices[deviceID] = DeviceData()
             }
-            cachedSyncData.devices[deviceID]?.setCount(0, for: today, appCounts: nil)
+            cachedSyncData.devices[deviceID]?.setCount(0, for: today, appCounts: nil, reset: true)
             totalKeystrokeCount = cachedSyncData.totalCount(for: today)
             updateMenuBarTitle()
+
+            // The SaaS merge is max-based within a reset generation. Push the new generation now
+            // so a subsequent pull cannot bring the pre-reset count back.
+            pushToCloud()
 
             // Write reset to iCloud file async
             if let url = syncFileURL {
@@ -1003,7 +1190,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         if syncData.devices[self.deviceID] == nil {
                             syncData.devices[self.deviceID] = DeviceData()
                         }
-                        syncData.devices[self.deviceID]?.setCount(0, for: today, appCounts: nil)
+                        syncData.devices[self.deviceID]?.setCount(0, for: today, appCounts: nil, reset: true)
                         return syncData
                     }
                 }

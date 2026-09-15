@@ -1,0 +1,95 @@
+import Foundation
+
+@main
+struct SyncDataTests {
+    static func main() throws {
+        try legacyDailyCountDecodesWithoutResetGeneration()
+        newerResetGenerationOverridesHigherStaleCount()
+        countCanGrowWithinResetGeneration()
+        repairsEntireConsecutiveCarryChain()
+        doesNotRepairNonConsecutiveOrNonMatchingData()
+        compactCountUsesAtMostThreeSignificantDigits()
+        print("InputStats model tests: 6 passed")
+    }
+
+    private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
+        guard condition() else { fatalError(message) }
+    }
+
+    private static func legacyDailyCountDecodesWithoutResetGeneration() throws {
+        let json = #"{"count":42,"lastModified":123,"appCounts":{"app":42}}"#.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(DailyCount.self, from: json)
+
+        expect(decoded.count == 42, "legacy count changed")
+        expect(decoded.resetAt == nil, "legacy row unexpectedly gained a reset generation")
+    }
+
+    private static func newerResetGenerationOverridesHigherStaleCount() {
+        var local = syncData(count: 12, resetAt: 200)
+        let stale = syncData(count: 5_000, resetAt: nil)
+
+        local.merge(with: stale)
+
+        expect(local.devices["device"]?.count(for: "2026-09-15") == 12, "stale count beat reset")
+        expect(local.devices["device"]?.dailyCounts["2026-09-15"]?.resetAt == 200, "reset generation changed")
+    }
+
+    private static func countCanGrowWithinResetGeneration() {
+        var local = syncData(count: 12, resetAt: 200)
+        let newerCount = syncData(count: 25, resetAt: 200)
+
+        local.merge(with: newerCount)
+
+        expect(local.devices["device"]?.count(for: "2026-09-15") == 25, "count did not grow after reset")
+    }
+
+    private static func repairsEntireConsecutiveCarryChain() {
+        var device = DeviceData()
+        device.dailyCounts["2026-09-08"] = DailyCount(count: 100, appCounts: ["app": 100])
+        device.dailyCounts["2026-09-09"] = DailyCount(count: 140, appCounts: ["app": 40])
+        device.dailyCounts["2026-09-10"] = DailyCount(count: 165, appCounts: ["app": 25])
+        var data = SyncData()
+        data.devices["device"] = device
+
+        let repaired = data.repairCarriedDailyCounts(for: "device")
+
+        expect(repaired == ["2026-09-09", "2026-09-10"], "carry chain was not fully detected")
+        expect(data.devices["device"]?.count(for: "2026-09-09") == 40, "first carried day not repaired")
+        expect(data.devices["device"]?.count(for: "2026-09-10") == 25, "second carried day not repaired")
+        expect(data.devices["device"]?.dailyCounts["2026-09-09"]?.resetAt != nil, "repair lacks reset generation")
+    }
+
+    private static func doesNotRepairNonConsecutiveOrNonMatchingData() {
+        var device = DeviceData()
+        device.dailyCounts["2026-09-08"] = DailyCount(count: 100, appCounts: ["app": 100])
+        device.dailyCounts["2026-09-10"] = DailyCount(count: 140, appCounts: ["app": 40])
+        device.dailyCounts["2026-09-11"] = DailyCount(count: 170, appCounts: ["app": 60])
+        var data = SyncData()
+        data.devices["device"] = device
+
+        expect(data.repairCarriedDailyCounts(for: "device").isEmpty, "valid data was repaired")
+        expect(data.devices["device"]?.count(for: "2026-09-10") == 140, "non-consecutive day changed")
+        expect(data.devices["device"]?.count(for: "2026-09-11") == 170, "non-matching day changed")
+    }
+
+    private static func compactCountUsesAtMostThreeSignificantDigits() {
+        expect(CountFormatter.compact(999) == "999", "sub-thousand formatting failed")
+        expect(CountFormatter.compact(1_234) == "1.23k", "one-thousand formatting failed")
+        expect(CountFormatter.compact(12_345) == "12.3k", "ten-thousand formatting failed")
+        expect(CountFormatter.compact(232_850) == "233k", "hundred-thousand formatting failed")
+        expect(CountFormatter.compact(999_999) == "1M", "million rollover formatting failed")
+        expect(CountFormatter.compact(1_234_567) == "1.23M", "million formatting failed")
+    }
+
+    private static func syncData(count: Int, resetAt: TimeInterval?) -> SyncData {
+        var device = DeviceData()
+        device.dailyCounts["2026-09-15"] = DailyCount(
+            count: count,
+            appCounts: ["app": count],
+            resetAt: resetAt
+        )
+        var data = SyncData()
+        data.devices["device"] = device
+        return data
+    }
+}
