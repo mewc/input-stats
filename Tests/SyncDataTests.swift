@@ -12,8 +12,10 @@ struct SyncDataTests {
         preservesResetGenerationAsCountAdvances()
         repairedSyncRowRejectsStaleLocalCarry()
         repairedSyncRowKeepsLivePostRepairKeys()
+        try minutePayloadContainsCountsButNoInputContent()
+        try minutePayloadUsesMinuteTimestampAndClickTypes()
         compactCountUsesAtMostThreeSignificantDigits()
-        print("InputStats model tests: 10 passed")
+        print("InputStats model tests: 12 passed")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -146,6 +148,54 @@ struct SyncDataTests {
         expect(CountFormatter.compact(232_850) == "233k", "hundred-thousand formatting failed")
         expect(CountFormatter.compact(999_999) == "1M", "million rollover formatting failed")
         expect(CountFormatter.compact(1_234_567) == "1.23M", "million formatting failed")
+    }
+
+    private static func minutePayloadContainsCountsButNoInputContent() throws {
+        let payload = sampleMinutePayload()
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(payload)
+        let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let buckets = object["buckets"] as! [[String: Any]]
+        let bucketKeys = Set(buckets[0].keys)
+
+        expect(Set(object.keys) == Set(["schemaVersion", "clientDeviceId", "appVersion", "osVersion", "buckets"]), "minute batch gained an unknown top-level field")
+        expect(bucketKeys == Set(["startedAt", "utcOffsetMinutes", "keys", "clicks", "scrollTicks", "pointerDistance", "apps"]), "minute bucket gained a content-level field")
+
+        let json = String(data: data, encoding: .utf8)!
+        for forbidden in ["text", "keyCode", "windowTitle", "url", "clipboard", "filePath"] {
+            expect(!json.contains(forbidden), "minute payload contains forbidden field \(forbidden)")
+        }
+        expect(json.contains("com.apple.Terminal"), "private bundle ID was not encoded")
+    }
+
+    private static func minutePayloadUsesMinuteTimestampAndClickTypes() throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(sampleMinutePayload())
+        let json = String(data: data, encoding: .utf8)!
+        expect(json.contains("2026-09-15T12:29:00Z"), "minute timestamp encoding changed")
+        expect(json.contains(#""left":4"#), "left clicks missing")
+        expect(json.contains(#""right":1"#), "right clicks missing")
+        expect(json.contains(#""other":2"#), "other clicks missing")
+    }
+
+    private static func sampleMinutePayload() -> MinuteBatchPayload {
+        MinuteBatchPayload(
+            schemaVersion: 1,
+            clientDeviceId: "device",
+            appVersion: "0.2.0",
+            osVersion: "macOS",
+            buckets: [MinuteBucketPayload(
+                startedAt: ISO8601DateFormatter().date(from: "2026-09-15T12:29:00Z")!,
+                utcOffsetMinutes: 600,
+                keys: 42,
+                clicks: MinuteClicksPayload(left: 4, right: 1, other: 2),
+                scrollTicks: 12,
+                pointerDistance: 1_234,
+                apps: [MinuteAppPayload(bundleId: "com.apple.Terminal", keys: 42)]
+            )]
+        )
     }
 
     private static func syncData(count: Int, resetAt: TimeInterval?) -> SyncData {

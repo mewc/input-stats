@@ -702,6 +702,8 @@ extension EventKind {
         switch self {
         case .key: return .blue
         case .click: return .green
+        case .rightClick: return .green
+        case .otherClick: return .green
         case .scroll: return .orange
         case .move: return .pink
         }
@@ -1189,12 +1191,16 @@ struct MouseTimeseriesSection: View {
         let start = end - span.seconds
         let res = resolution
         EventStore.shared.series(startBucket: start, endBucket: end, resolution: res,
-                                 kinds: [.click, .scroll]) { pts in
+                                 kinds: EventKind.clickKinds + [.scroll]) { pts in
             var clickB: [Int: Int] = [:]
             var scrollB: [Int: Int] = [:]
             for p in pts {
                 let b = Int(p.date.timeIntervalSince1970)
-                if p.kind == .click { clickB[b] = p.value } else if p.kind == .scroll { scrollB[b] = p.value }
+                if EventKind.clickKinds.contains(p.kind) {
+                    clickB[b, default: 0] += p.value
+                } else if p.kind == .scroll {
+                    scrollB[b] = p.value
+                }
             }
             self.clickPts = denseSeries(label: "Clicks", byBucket: clickB, start: start, end: end, resolution: res)
             self.scrollPts = denseSeries(label: "Scroll", byBucket: scrollB, start: start, end: end, resolution: res)
@@ -1374,7 +1380,7 @@ struct MouseDailySection: View {
 
         // Query hourly and fold into local days (avoids UTC-day misalignment of 86400s buckets).
         EventStore.shared.series(startBucket: start, endBucket: end, resolution: 3600,
-                                 kinds: [.click, .scroll, .move]) { pts in
+                                 kinds: EventKind.clickKinds + [.scroll, .move]) { pts in
             var perDay: [Date: [EventKind: Int]] = [:]
             for p in pts {
                 let day = cal.startOfDay(for: p.date)
@@ -1390,7 +1396,7 @@ struct MouseDailySection: View {
             for offset in 0..<dayRange {
                 guard let day = cal.date(byAdding: .day, value: -offset, to: today) else { continue }
                 let kinds = perDay[day] ?? [:]
-                let clicks = kinds[.click] ?? 0
+                let clicks = EventKind.clickKinds.reduce(0) { $0 + (kinds[$1] ?? 0) }
                 let scroll = kinds[.scroll] ?? 0
                 let move = kinds[.move] ?? 0
                 // Emit every day (incl. zeros) so the scroll line drops to 0 instead of bridging gaps.

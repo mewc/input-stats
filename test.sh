@@ -5,6 +5,9 @@ mkdir -p .build
 xcrun swiftc Sources/Models.swift Tests/SyncDataTests.swift -o .build/InputStatsModelTests
 .build/InputStatsModelTests
 
+xcrun swiftc Sources/EventStore.swift Tests/EventStoreTests.swift -lsqlite3 -o .build/InputStatsEventStoreTests
+.build/InputStatsEventStoreTests
+
 xcrun swiftc Sources/Models.swift Tools/RepairSyncData.swift -o .build/RepairSyncData
 repair_tmp=$(mktemp -d /tmp/input-stats-repair-tests.XXXXXX)
 trap 'rm -rf "$repair_tmp"' EXIT

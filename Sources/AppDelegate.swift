@@ -14,6 +14,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var permissionCheckTimer: Timer?
     private var permissionCheckTicks = 0
     private var syncTimer: Timer?
+    private var minuteSyncTimer: Timer?
+    private var minuteUploadInFlight = false
     private var dayChangeTimer: Timer?
     private var fileMonitor: DispatchSourceFileSystemObject?
     private var lastSyncTime: Date?
@@ -99,6 +101,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         startSyncTimer()
+        startMinuteSyncTimer()
         scheduleDayChangeTimer()
         startFileMonitor()
         startFrontmostAppTracking()
@@ -249,6 +252,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         fileMonitor?.cancel()
         syncTimer?.invalidate()
+        minuteSyncTimer?.invalidate()
         dayChangeTimer?.invalidate()
         permissionCheckTimer?.invalidate()
         updateCheckTimer?.invalidate()
@@ -568,6 +572,53 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         syncTimer = Timer.scheduledTimer(withTimeInterval: 300.0, repeats: true) { [weak self] _ in
             self?.syncToCloud()
             self?.cloudSync.pull()
+        }
+    }
+
+    private func startMinuteSyncTimer() {
+        if cloudSync.isConnected { uploadCompletedMinutes() }
+        minuteSyncTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+            self?.uploadCompletedMinutes()
+        }
+    }
+
+    /// Scan at most twelve hours per batch. Advancing across idle ranges locally
+    /// makes the initial 30-day backfill finite without uploading zero-activity
+    /// minutes, which would reveal sleep/away patterns unnecessarily.
+    private func uploadCompletedMinutes() {
+        guard cloudSync.isConnected,
+              let serverDeviceID = cloudSync.serverDeviceID,
+              !minuteUploadInFlight else { return }
+
+        let completedEnd = (Int(Date().timeIntervalSince1970) / 60) * 60
+        let retentionStart = completedEnd - (30 * 24 * 60 * 60)
+        let cursorKey = "cloudMinuteCursor.\(serverDeviceID)"
+        let storedCursor = UserDefaults.standard.integer(forKey: cursorKey)
+        let start = max(storedCursor > 0 ? storedCursor : retentionStart, retentionStart)
+        guard start < completedEnd else { return }
+        let scanEnd = min(start + (12 * 60 * 60), completedEnd)
+
+        minuteUploadInFlight = true
+        eventStore.minuteExport(startBucket: start, endBucket: scanEnd) { [weak self] export in
+            guard let self else { return }
+            if export.buckets.isEmpty {
+                UserDefaults.standard.set(export.scannedThrough, forKey: cursorKey)
+                self.minuteUploadInFlight = false
+                DispatchQueue.main.async { self.uploadCompletedMinutes() }
+                return
+            }
+
+            self.cloudSync.pushMinutes(clientDeviceID: self.deviceID, buckets: export.buckets) { acceptedThrough in
+                DispatchQueue.main.async {
+                    if acceptedThrough != nil {
+                        UserDefaults.standard.set(export.scannedThrough, forKey: cursorKey)
+                    }
+                    self.minuteUploadInFlight = false
+                    if acceptedThrough != nil && export.scannedThrough < completedEnd {
+                        self.uploadCompletedMinutes()
+                    }
+                }
+            }
         }
     }
 
@@ -899,6 +950,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         addCloudSyncSection()
 
+        theMenu.addItem(NSMenuItem(
+            title: "Privacy Details…",
+            action: #selector(showPrivacyDetails),
+            keyEquivalent: ""
+        ))
+
         theMenu.addItem(NSMenuItem.separator())
 
         let launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -1006,6 +1063,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 ))
             }
             theMenu.addItem(NSMenuItem(
+                title: "Open Cloud Dashboard",
+                action: #selector(openCloudDashboard),
+                keyEquivalent: ""
+            ))
+            theMenu.addItem(NSMenuItem(
                 title: "Sign Out of Cloud Sync",
                 action: #selector(signOutOfCloud),
                 keyEquivalent: ""
@@ -1023,6 +1085,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 action: #selector(signInToCloud),
                 keyEquivalent: ""
             ))
+            theMenu.addItem(NSMenuItem(
+                title: "Enter Connection Code…",
+                action: #selector(enterCloudConnectionCode),
+                keyEquivalent: ""
+            ))
         } else {
             if let error = cloudSync.lastError {
                 let status = NSMenuItem(title: error, action: nil, keyEquivalent: "")
@@ -1038,7 +1105,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func signInToCloud() {
-        cloudSync.beginLogin()
+        cloudSync.beginLogin(
+            clientDeviceID: deviceID,
+            deviceName: Host.current().localizedName ?? "Mac"
+        )
+    }
+
+    @objc private func enterCloudConnectionCode() {
+        let alert = NSAlert()
+        alert.messageText = "Enter Connection Code"
+        alert.informativeText = "Paste the eight-character code shown in your browser."
+        alert.addButton(withTitle: "Connect")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.placeholderString = "ABCD-2345"
+        alert.accessoryView = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let code = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else { return }
+        cloudSync.completePairing(code: code)
+    }
+
+    @objc private func openCloudDashboard() {
+        NSWorkspace.shared.open(cloudSync.baseURL.appendingPathComponent("dashboard"))
     }
 
     @objc private func signOutOfCloud() {
@@ -1048,6 +1137,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func retryCloudSync() {
         pushToCloud()
         cloudSync.pull()
+    }
+
+    @objc private func showPrivacyDetails() {
+        let alert = NSAlert()
+        alert.messageText = "Counts, never content"
+        alert.informativeText = "When account sync is on, Input Stats sends completed one-minute numeric totals: keys, left/right/other clicks, scroll ticks, pointer distance, timezone offset, app/OS version, and exact app bundle IDs for private per-app counts.\n\nIt never captures or sends typed characters, key codes, window titles, URLs, clipboard contents, file paths, screenshots, or raw input events. Five-second detail stays on this Mac."
+        alert.addButton(withTitle: "Open Full Privacy Details")
+        alert.addButton(withTitle: "Done")
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(cloudSync.baseURL.appendingPathComponent("privacy"))
+        }
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -1060,9 +1160,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rebuildMenu()
         updateMenuBarTitle()
         // Clicks/Distance come from the local SQLite store; fetch async and re-render in place.
-        eventStore.dailyTotals(kinds: [.click, .move]) { [weak self] totals in
+        eventStore.dailyTotals(kinds: EventKind.clickKinds + [.move]) { [weak self] totals in
             guard let self = self else { return }
-            self.clickDaily = totals[.click] ?? [:]
+            var clicks: [String: Int] = [:]
+            for kind in EventKind.clickKinds {
+                for (date, count) in totals[kind] ?? [:] {
+                    clicks[date, default: 0] += count
+                }
+            }
+            self.clickDaily = clicks
             self.moveDaily = totals[.move] ?? [:]
             self.rebuildMenu()
         }
@@ -1303,8 +1409,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch type {
         case .keyDown:
             handleKeyEvent()
-        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+        case .leftMouseDown:
             accumulate(.click, amount: 1)
+        case .rightMouseDown:
+            accumulate(.rightClick, amount: 1)
+        case .otherMouseDown:
+            accumulate(.otherClick, amount: 1)
         case .scrollWheel:
             accumulate(.scroll, amount: 1)
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
