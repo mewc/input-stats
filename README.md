@@ -16,16 +16,23 @@ and [drummerduck.com](https://drummerduck.com).
 
 ## Install
 
-No notarized release / Homebrew cask — this is a personal public fork distributed as a direct download.
+**Homebrew** (recommended — clears the Gatekeeper quarantine for you):
+
+```bash
+brew install --cask mewc/tap/input-stats
+```
+
+**Direct download**
 
 1. Download `InputStats.zip` from the [latest release](https://github.com/mewc/input-stats/releases/latest) and unzip it.
 2. Move **Input Stats.app** to `/Applications`.
-3. First launch is blocked by Gatekeeper (ad-hoc signed, not notarized). Either **right-click the app → Open**
+3. First launch is blocked by Gatekeeper (self-signed, not notarized). Either **right-click the app → Open**
    and confirm, or run:
    ```bash
    xattr -cr "/Applications/Input Stats.app"
    ```
-4. Grant **Accessibility** permission when prompted.
+
+Either way, grant **Accessibility** permission when prompted. The app only ever counts — keystrokes are never recorded.
 
 ## Features
 
