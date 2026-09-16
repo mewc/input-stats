@@ -19,7 +19,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SERVICES=("com.mewc.input-stats.cloud" "com.mewc.input-stats.cloud.dev")
-ACCOUNTS=("deviceToken" "signingSecret" "serverDeviceID" "pendingPairingVerifier")
+# `cloudCredentials` is the consolidated item (v0.3.3+); the rest are the legacy
+# per-value items, still listed so a machine that has not migrated yet reports.
+ACCOUNTS=("cloudCredentials" "deviceToken" "signingSecret" "serverDeviceID" "pendingPairingVerifier")
 
 APPLY=false
 [ "${1:-}" = "--apply" ] && APPLY=true
@@ -48,7 +50,7 @@ import Foundation
 import Security
 
 let services = ["com.mewc.input-stats.cloud", "com.mewc.input-stats.cloud.dev"]
-let accounts = ["deviceToken", "signingSecret", "serverDeviceID", "pendingPairingVerifier"]
+let accounts = ["cloudCredentials", "deviceToken", "signingSecret", "serverDeviceID", "pendingPairingVerifier"]
 
 func hexToString(_ hex: String) -> String? {
     var data = Data()
