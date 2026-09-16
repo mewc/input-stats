@@ -346,6 +346,7 @@ struct BreakdownSection: View {
     @State private var rate: EventStore.RateStats = .empty
     @State private var perDevice: [(device: InputDevice, totals: [EventKind: Int])] = []
     @State private var perDisplay: [(display: DisplayTarget, totals: [EventKind: Int])] = []
+    @State private var layouts: [(layout: LayoutKey, count: Int)] = []
     @State private var refreshTimer: Timer?
 
     private let columns = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
@@ -375,6 +376,8 @@ struct BreakdownSection: View {
                         keyTiles
                         pace
                         composition
+                        layoutRow
+                        KeyHeatmapSection(rangeDays: rangeDays)
                     } else {
                         mouseTiles
                         screenTable
@@ -431,6 +434,27 @@ struct BreakdownSection: View {
                      subtitle: "keys in your busiest minute", color: .orange)
             StatTile(title: "Keys / active min", value: String(format: "%.0f", rate.perActiveMinute),
                      subtitle: "over \(fullNumber(rate.activeMinutes)) active min", color: .teal)
+        }
+    }
+
+    /// Which input source the keystrokes were typed in. Only interesting with more than one.
+    @ViewBuilder
+    private var layoutRow: some View {
+        if layouts.count > 1 {
+            let total = layouts.reduce(0) { $0 + $1.count }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Layouts").font(.subheadline).foregroundColor(.secondary)
+                ForEach(layouts, id: \.layout.id) { entry in
+                    HStack(spacing: 8) {
+                        Text(entry.layout.displayName).font(.callout).lineLimit(1)
+                        Spacer()
+                        Text(fullNumber(entry.count)).font(.caption.monospacedDigit()).foregroundColor(.secondary)
+                        Text(percentLabel(entry.count, of: total))
+                            .font(.caption.monospacedDigit()).foregroundColor(.secondary)
+                            .frame(width: 40, alignment: .trailing)
+                    }
+                }
+            }
         }
     }
 
@@ -597,6 +621,9 @@ struct BreakdownSection: View {
         let end = EventStore.bucket() + EventStore.baseBucketSeconds
         EventStore.shared.rateStats(kinds: family == .keys ? [.key] : EventKind.clickKinds,
                                     startBucket: start, endBucket: end) { self.rate = $0 }
+        if family == .keys {
+            EventStore.shared.layoutUsage(days: rangeDays) { self.layouts = $0 }
+        }
         if family == .mouse {
             EventStore.shared.displays { screens in
                 EventStore.shared.totalsByDisplay(startBucket: start, endBucket: end) { byDisplay in

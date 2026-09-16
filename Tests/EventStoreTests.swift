@@ -17,7 +17,8 @@ struct EventStoreTests {
         ratesUseActiveMinutesOnly()
         shippedKindRawValuesAreStable()
         displayIdentityIsStableAndNamed()
-        print("InputStats event-store tests: 12 passed")
+        layoutKeysFallBackToTheirIdentifier()
+        print("InputStats event-store tests: 13 passed")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -167,6 +168,15 @@ struct EventStoreTests {
         expect(unnamedExternal.displayName == "External Display", "unnamed external screen label")
         expect(DisplayTarget.unknown.displayName == "Unknown screen", "rows without a screen")
         expect(DisplayTarget.unknownID == 0, "unknown screen must stay the zero default")
+    }
+
+    private static func layoutKeysFallBackToTheirIdentifier() {
+        let named = LayoutKey(id: "com.apple.keylayout.Australian", name: "Australian")
+        expect(named.displayName == "Australian", "named layout should show its localized name")
+        let unnamed = LayoutKey(id: "com.apple.keylayout.US", name: "")
+        expect(unnamed.displayName == "com.apple.keylayout.US", "unnamed layout falls back to its id")
+        expect(named != unnamed, "layouts are distinguished by id")
+        expect(EventStore.dayString(for: Date(timeIntervalSince1970: 0)).count == 10, "day keys are yyyy-MM-dd")
     }
 
     private static func row(_ minute: Int, _ kind: EventKind, _ app: String, _ value: Int) -> EventStore.MinuteRow {

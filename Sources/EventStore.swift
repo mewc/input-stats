@@ -219,6 +219,14 @@ struct DisplayDescriptor {
     let isBuiltIn: Bool
 }
 
+/// A keyboard input source (layout / language), identified by its TIS input-source id.
+struct LayoutKey: Hashable {
+    let id: String
+    let name: String
+
+    var displayName: String { name.isEmpty ? id : name }
+}
+
 // SQLite wants this destructor for transient (Swift-owned) strings bound to statements.
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
@@ -358,6 +366,28 @@ final class EventStore {
                 builtin    INTEGER NOT NULL DEFAULT 0,
                 first_seen INTEGER NOT NULL,
                 last_seen  INTEGER NOT NULL
+            );
+            """)
+
+        // Opt-in key heatmap. Aggregate counts per key code per local day — never sequences,
+        // never characters, never synced. Rows only exist while the user has the toggle on.
+        exec("""
+            CREATE TABLE IF NOT EXISTS key_presses (
+                day     TEXT NOT NULL,
+                keycode INTEGER NOT NULL,
+                count   INTEGER NOT NULL,
+                PRIMARY KEY (day, keycode)
+            );
+            """)
+
+        // Which keyboard layout / input source the day's keystrokes were typed in.
+        exec("""
+            CREATE TABLE IF NOT EXISTS layout_usage (
+                day    TEXT NOT NULL,
+                layout TEXT NOT NULL,
+                name   TEXT NOT NULL,
+                count  INTEGER NOT NULL,
+                PRIMARY KEY (day, layout)
             );
             """)
 
@@ -648,6 +678,16 @@ final class EventStore {
     private func pruneLocked() {
         let cutoff = EventStore.bucket(for: Date().addingTimeInterval(-Double(retentionDays) * 86400))
         exec("DELETE FROM events WHERE bucket < \(cutoff);")
+        let dayCutoff = EventStore.dayString(for: Date().addingTimeInterval(-Double(retentionDays) * 86400))
+        exec("DELETE FROM key_presses WHERE day < '\(dayCutoff)';")
+        exec("DELETE FROM layout_usage WHERE day < '\(dayCutoff)';")
+    }
+
+    /// Local "yyyy-MM-dd", matching the day keys used by the sync data and the daily queries.
+    static func dayString(for date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: date)
     }
 
     func prune() {
@@ -1050,6 +1090,111 @@ final class EventStore {
                         let display = Int(sqlite3_column_int64(stmt, 0))
                         guard let kind = EventKind(rawValue: Int(sqlite3_column_int(stmt, 1))) else { continue }
                         result[display, default: [:]][kind] = Int(sqlite3_column_int64(stmt, 2))
+                    }
+                }
+                sqlite3_finalize(stmt)
+            }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    // MARK: Key heatmap (opt-in) and layouts
+
+    /// Persist a day's accumulated per-keycode counts. Only ever called while the heatmap
+    /// preference is on; turning it off stops writes and `clearKeyHeatmap()` removes the history.
+    func recordKeyPresses(day: String, counts: [Int: Int]) {
+        guard !counts.isEmpty else { return }
+        queue.async { [weak self] in
+            guard let self, let db = self.db else { return }
+            let sql = """
+                INSERT INTO key_presses(day, keycode, count) VALUES(?, ?, ?)
+                ON CONFLICT(day, keycode) DO UPDATE SET count = count + excluded.count;
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_exec(db, "BEGIN;", nil, nil, nil)
+            for (keycode, count) in counts where count != 0 {
+                sqlite3_reset(stmt)
+                sqlite3_bind_text(stmt, 1, day, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int(stmt, 2, Int32(keycode))
+                sqlite3_bind_int64(stmt, 3, Int64(count))
+                sqlite3_step(stmt)
+            }
+            sqlite3_exec(db, "COMMIT;", nil, nil, nil)
+        }
+    }
+
+    /// Per-keycode totals for the last `days` local days. Completion delivered on the main queue.
+    func keyPresses(days: Int, completion: @escaping ([Int: Int]) -> Void) {
+        let since = EventStore.dayString(for: Calendar.current.date(byAdding: .day, value: -(days - 1), to: Date()) ?? Date())
+        queue.async { [weak self] in
+            var result: [Int: Int] = [:]
+            if let db = self?.db {
+                var stmt: OpaquePointer?
+                let sql = "SELECT keycode, SUM(count) FROM key_presses WHERE day >= ? GROUP BY keycode;"
+                if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(stmt, 1, since, -1, SQLITE_TRANSIENT)
+                    while sqlite3_step(stmt) == SQLITE_ROW {
+                        result[Int(sqlite3_column_int(stmt, 0))] = Int(sqlite3_column_int64(stmt, 1))
+                    }
+                }
+                sqlite3_finalize(stmt)
+            }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    /// Drop all recorded key-press history (used when the user turns the heatmap off).
+    func clearKeyHeatmap(completion: (() -> Void)? = nil) {
+        queue.async { [weak self] in
+            self?.exec("DELETE FROM key_presses;")
+            if let completion { DispatchQueue.main.async { completion() } }
+        }
+    }
+
+    /// Persist a day's keystroke counts per input source.
+    func recordLayoutUsage(day: String, counts: [LayoutKey: Int]) {
+        guard !counts.isEmpty else { return }
+        queue.async { [weak self] in
+            guard let self, let db = self.db else { return }
+            let sql = """
+                INSERT INTO layout_usage(day, layout, name, count) VALUES(?, ?, ?, ?)
+                ON CONFLICT(day, layout) DO UPDATE SET count = count + excluded.count, name = excluded.name;
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_exec(db, "BEGIN;", nil, nil, nil)
+            for (layout, count) in counts where count != 0 {
+                sqlite3_reset(stmt)
+                sqlite3_bind_text(stmt, 1, day, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(stmt, 2, layout.id, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(stmt, 3, layout.name, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int64(stmt, 4, Int64(count))
+                sqlite3_step(stmt)
+            }
+            sqlite3_exec(db, "COMMIT;", nil, nil, nil)
+        }
+    }
+
+    /// Keystrokes per input source over the last `days` local days, busiest first.
+    func layoutUsage(days: Int, completion: @escaping ([(layout: LayoutKey, count: Int)]) -> Void) {
+        let since = EventStore.dayString(for: Calendar.current.date(byAdding: .day, value: -(days - 1), to: Date()) ?? Date())
+        queue.async { [weak self] in
+            var result: [(layout: LayoutKey, count: Int)] = []
+            if let db = self?.db {
+                var stmt: OpaquePointer?
+                let sql = """
+                    SELECT layout, name, SUM(count) AS s FROM layout_usage
+                    WHERE day >= ? GROUP BY layout ORDER BY s DESC;
+                    """
+                if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(stmt, 1, since, -1, SQLITE_TRANSIENT)
+                    while sqlite3_step(stmt) == SQLITE_ROW {
+                        let key = LayoutKey(id: String(cString: sqlite3_column_text(stmt, 0)),
+                                            name: String(cString: sqlite3_column_text(stmt, 1)))
+                        result.append((key, Int(sqlite3_column_int64(stmt, 2))))
                     }
                 }
                 sqlite3_finalize(stmt)
