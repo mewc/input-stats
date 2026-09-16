@@ -16,7 +16,8 @@ struct EventStoreTests {
         deviceKeysMergeWiredAndWirelessModes()
         ratesUseActiveMinutesOnly()
         shippedKindRawValuesAreStable()
-        print("InputStats event-store tests: 11 passed")
+        displayIdentityIsStableAndNamed()
+        print("InputStats event-store tests: 12 passed")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -155,6 +156,17 @@ struct EventStoreTests {
             expect(kind.rawValue == raw, "\(kind.label) raw value moved from \(raw) to \(kind.rawValue)")
         }
         expect(Set(EventKind.allCases.map(\.rawValue)).count == EventKind.allCases.count, "duplicate raw values")
+    }
+
+    private static func displayIdentityIsStableAndNamed() {
+        let external = DisplayTarget(id: 1, key: "UUID-A", name: "LG HDR WQHD", isBuiltIn: false)
+        expect(external.displayName == "LG HDR WQHD", "named screens keep their name")
+        let unnamedBuiltIn = DisplayTarget(id: 2, key: "UUID-B", name: "", isBuiltIn: true)
+        expect(unnamedBuiltIn.displayName == "Built-in Display", "unnamed built-in screen label")
+        let unnamedExternal = DisplayTarget(id: 3, key: "UUID-C", name: "", isBuiltIn: false)
+        expect(unnamedExternal.displayName == "External Display", "unnamed external screen label")
+        expect(DisplayTarget.unknown.displayName == "Unknown screen", "rows without a screen")
+        expect(DisplayTarget.unknownID == 0, "unknown screen must stay the zero default")
     }
 
     private static func row(_ minute: Int, _ kind: EventKind, _ app: String, _ value: Int) -> EventStore.MinuteRow {

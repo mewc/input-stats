@@ -144,3 +144,71 @@ enum GestureEventType: UInt32, CaseIterable {
         }
     }
 }
+
+// MARK: - Screens
+
+/// Maps a pointer event's location to the screen it happened on.
+///
+/// `NSScreen.screens` is only safe to read on the main thread and re-reading it per event would be
+/// wasteful anyway, so frames and ids are cached and refreshed when the display configuration
+/// changes. Lookup is then a handful of rect containment checks.
+final class DisplayResolver {
+    static let shared = DisplayResolver()
+
+    private struct Entry {
+        let frame: CGRect
+        let id: Int
+    }
+    private var entries: [Entry] = []
+
+    private init() {
+        refresh()
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refresh()
+        }
+    }
+
+    /// The `displays` row id for the screen containing `location`, or 0 when it matches none
+    /// (a point can briefly fall outside every frame while displays are being rearranged).
+    func displayID(at location: CGPoint) -> Int {
+        for entry in entries where entry.frame.contains(location) { return entry.id }
+        return DisplayTarget.unknownID
+    }
+
+    /// Re-read the screen list and ensure each has a `displays` row.
+    func refresh() {
+        entries = NSScreen.screens.map { screen in
+            Entry(frame: Self.eventFrame(of: screen),
+                  id: EventStore.shared.displayID(for: Self.describe(screen)))
+        }
+    }
+
+    /// Screen frames are bottom-left origin in Cocoa, but CGEvent locations are top-left origin
+    /// relative to the primary display — flip into event space once, at cache time.
+    private static func eventFrame(of screen: NSScreen) -> CGRect {
+        guard let primary = NSScreen.screens.first else { return screen.frame }
+        let f = screen.frame
+        return CGRect(x: f.origin.x,
+                      y: primary.frame.maxY - f.maxY,
+                      width: f.width,
+                      height: f.height)
+    }
+
+    private static func describe(_ screen: NSScreen) -> DisplayDescriptor {
+        let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+        let displayID = CGDirectDisplayID(number?.uint32Value ?? 0)
+        let isBuiltIn = CGDisplayIsBuiltin(displayID) != 0
+        // The display UUID survives unplug/replug and reboots; the CGDirectDisplayID does not.
+        var key = ""
+        if let uuid = CGDisplayCreateUUIDFromDisplayID(displayID)?.takeRetainedValue() {
+            key = CFUUIDCreateString(nil, uuid) as String
+        }
+        let name = screen.localizedName
+        if key.isEmpty { key = "\(name)|\(isBuiltIn ? 1 : 0)" }
+        return DisplayDescriptor(key: key, name: name, isBuiltIn: isBuiltIn)
+    }
+}
