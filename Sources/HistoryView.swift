@@ -718,9 +718,10 @@ extension EventKind {
         switch self {
         case .key, .keyRepeat, .keySynthetic, .keyShortcut, .modifier: return .blue
         case .click, .rightClick, .otherClick, .doubleClick: return .green
-        case .scroll, .scrollMomentum: return .orange
+        case .scroll, .scrollMomentum, .scrollHorizontal, .scrollDistance: return .orange
         case .move, .drag: return .pink
-        case .gesture: return .purple
+        case .gesture, .gesturePinch, .gestureRotate, .gestureSwipe, .gestureSmartZoom: return .purple
+        case .backClick, .forwardClick, .tripleClick, .forceClick: return .green
         case .keyLetter: return .blue
         case .keyDigit: return .cyan
         case .keySpace: return .mint

@@ -120,6 +120,18 @@ enum GestureEventType: UInt32, CaseIterable {
     case swipe = 31
     case smartMagnify = 32
 
+    /// NSEvent.EventType.pressure — trackpad force, used to detect Force clicks.
+    static let pressureEventType: UInt32 = 34
+
+    var kind: EventKind {
+        switch self {
+        case .rotate: return .gestureRotate
+        case .magnify: return .gesturePinch
+        case .swipe: return .gestureSwipe
+        case .smartMagnify: return .gestureSmartZoom
+        }
+    }
+
     /// Pinch/rotate stream many events per gesture; count those once, at the `.began` phase.
     /// Swipe and smart-zoom are already one event per gesture.
     func countsAsGesture(_ event: CGEvent) -> Bool {

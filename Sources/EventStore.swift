@@ -42,6 +42,24 @@ enum EventKind: Int, CaseIterable, Identifiable {
     case scrollMomentum = 19
     /// Trackpad gestures: pinch, rotate, swipe, smart-zoom.
     case gesture = 20
+    /// Gesture types (subsets of `gesture`).
+    case gesturePinch = 21
+    case gestureRotate = 22
+    case gestureSwipe = 23
+    case gestureSmartZoom = 24
+
+    /// Scroll events carrying a horizontal component (subset of `scroll`).
+    case scrollHorizontal = 25
+    /// Continuous (trackpad/Magic Mouse) scroll distance in pixels — a distance, not a count.
+    case scrollDistance = 26
+
+    /// Side-button clicks (subsets of `otherClick`).
+    case backClick = 27
+    case forwardClick = 28
+    /// Third click of a triple-click (subset of `click`).
+    case tripleClick = 29
+    /// Trackpad Force clicks (deep press past the second stage).
+    case forceClick = 30
 
     var id: Int { rawValue }
 
@@ -68,15 +86,26 @@ enum EventKind: Int, CaseIterable, Identifiable {
         case .drag: return "Dragging"
         case .scrollMomentum: return "Momentum scroll"
         case .gesture: return "Gestures"
+        case .gesturePinch: return "Pinch"
+        case .gestureRotate: return "Rotate"
+        case .gestureSwipe: return "Swipe"
+        case .gestureSmartZoom: return "Smart zoom"
+        case .scrollHorizontal: return "Horizontal scroll"
+        case .scrollDistance: return "Scroll distance"
+        case .backClick: return "Back button"
+        case .forwardClick: return "Forward button"
+        case .tripleClick: return "Triple clicks"
+        case .forceClick: return "Force clicks"
         }
     }
 
-    /// Movement and dragging are distances (pixels), not counts — charted separately.
-    var isDistance: Bool { self == .move || self == .drag }
+    /// Movement, dragging and continuous scrolling are distances (pixels), not counts.
+    var isDistance: Bool { self == .move || self == .drag || self == .scrollDistance }
 
     static let clickKinds: [EventKind] = [.click, .rightClick, .otherClick]
     static let keyCompositionKinds: [EventKind] = [.keyLetter, .keyDigit, .keySpace, .keyEnter,
                                                    .keyBackspace, .keyNavigation, .keyOther]
+    static let gestureKinds: [EventKind] = [.gesturePinch, .gestureRotate, .gestureSwipe, .gestureSmartZoom]
 }
 
 // MARK: - Input Devices
@@ -495,6 +524,60 @@ final class EventStore {
             )
         }
         return buckets
+    }
+
+    /// Rate statistics over a window, derived from per-minute totals of `kinds`.
+    struct RateStats {
+        /// Minutes in which at least one event happened.
+        let activeMinutes: Int
+        /// Highest single-minute total.
+        let peakPerMinute: Int
+        /// Total across the window.
+        let total: Int
+
+        /// Average per *active* minute — "how fast when you're actually going", not diluted by idle time.
+        var perActiveMinute: Double {
+            activeMinutes > 0 ? Double(total) / Double(activeMinutes) : 0
+        }
+
+        static let empty = RateStats(activeMinutes: 0, peakPerMinute: 0, total: 0)
+    }
+
+    /// Fold per-minute totals into rate stats. Pure seam, shared with the tests.
+    static func rateStats(minuteTotals: [Int]) -> RateStats {
+        let active = minuteTotals.filter { $0 > 0 }
+        return RateStats(activeMinutes: active.count,
+                         peakPerMinute: active.max() ?? 0,
+                         total: active.reduce(0, +))
+    }
+
+    /// Per-minute rate stats for `kinds` over a window. Completion delivered on the main queue.
+    func rateStats(kinds: [EventKind],
+                   startBucket: Int,
+                   endBucket: Int,
+                   completion: @escaping (RateStats) -> Void) {
+        queue.async { [weak self] in
+            var minutes: [Int] = []
+            if let db = self?.db, !kinds.isEmpty {
+                let kindList = kinds.map { String($0.rawValue) }.joined(separator: ",")
+                let sql = """
+                    SELECT SUM(count) FROM events
+                    WHERE bucket >= ? AND bucket < ? AND kind IN (\(kindList))
+                    GROUP BY bucket / 60;
+                    """
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_int64(stmt, 1, Int64(startBucket))
+                    sqlite3_bind_int64(stmt, 2, Int64(endBucket))
+                    while sqlite3_step(stmt) == SQLITE_ROW {
+                        minutes.append(Int(sqlite3_column_int64(stmt, 0)))
+                    }
+                }
+                sqlite3_finalize(stmt)
+            }
+            let stats = EventStore.rateStats(minuteTotals: minutes)
+            DispatchQueue.main.async { completion(stats) }
+        }
     }
 
     // MARK: Pruning

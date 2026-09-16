@@ -38,6 +38,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Physical-device attribution (built-in keyboard/trackpad vs external mouse/keyboard).
     private let deviceResolver = InputDeviceResolver.shared
     private var modifierDetector = ModifierPressDetector()
+    // Last trackpad pressure stage, so a Force click counts once per press, not per pressure event.
+    private var lastPressureStage: Int = 0
 
     // Per-day local totals for clicks and pointer movement (px), keyed by "yyyy-MM-dd".
     // Refreshed async from EventStore when the menu opens; powers the menu's Clicks/Distance sections.
@@ -1379,6 +1381,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for raw in GestureEventType.allCases {
             eventMask |= CGEventMask(1) << CGEventMask(raw.rawValue)
         }
+        eventMask |= CGEventMask(1) << CGEventMask(GestureEventType.pressureEventType)
 
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -1461,19 +1464,36 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .leftMouseDown:
             let device = deviceResolver.deviceID(for: event, role: .pointer)
             accumulate(.click, amount: 1, device: device)
-            if event.getIntegerValueField(.mouseEventClickState) == 2 {
-                accumulate(.doubleClick, amount: 1, device: device)
+            switch event.getIntegerValueField(.mouseEventClickState) {
+            case 2: accumulate(.doubleClick, amount: 1, device: device)
+            case 3: accumulate(.tripleClick, amount: 1, device: device)
+            default: break
             }
         case .rightMouseDown:
             accumulate(.rightClick, amount: 1, device: deviceResolver.deviceID(for: event, role: .pointer))
         case .otherMouseDown:
-            accumulate(.otherClick, amount: 1, device: deviceResolver.deviceID(for: event, role: .pointer))
+            let device = deviceResolver.deviceID(for: event, role: .pointer)
+            accumulate(.otherClick, amount: 1, device: device)
+            // Buttons 3/4 are the near/far thumb buttons on most mice (back/forward in browsers).
+            switch event.getIntegerValueField(.mouseEventButtonNumber) {
+            case 3: accumulate(.backClick, amount: 1, device: device)
+            case 4: accumulate(.forwardClick, amount: 1, device: device)
+            default: break
+            }
         case .scrollWheel:
             let device = deviceResolver.deviceID(for: event, role: .pointer)
             accumulate(.scroll, amount: 1, device: device)
             if event.getIntegerValueField(.scrollWheelEventMomentumPhase) != 0 {
                 accumulate(.scrollMomentum, amount: 1, device: device)
             }
+            // Axis 2 is horizontal. Pixel deltas are only meaningful for continuous (trackpad /
+            // Magic Mouse) scrolling; a notched wheel reports 0 there and only contributes ticks.
+            if event.getIntegerValueField(.scrollWheelEventDeltaAxis2) != 0 {
+                accumulate(.scrollHorizontal, amount: 1, device: device)
+            }
+            let scrollPixels = abs(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1))
+                + abs(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2))
+            accumulate(.scrollDistance, amount: Int(scrollPixels), device: device)
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
             let dx = event.getDoubleValueField(.mouseEventDeltaX)
             let dy = event.getDoubleValueField(.mouseEventDeltaY)
@@ -1486,10 +1506,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
         default:
-            if let gesture = GestureEventType(rawValue: type.rawValue), gesture.countsAsGesture(event) {
-                accumulate(.gesture, amount: 1, device: deviceResolver.deviceID(for: event, role: .pointer))
+            if type.rawValue == GestureEventType.pressureEventType {
+                if isForceClick(event) {
+                    accumulate(.forceClick, amount: 1, device: deviceResolver.deviceID(for: event, role: .pointer))
+                }
+            } else if let gesture = GestureEventType(rawValue: type.rawValue), gesture.countsAsGesture(event) {
+                let device = deviceResolver.deviceID(for: event, role: .pointer)
+                accumulate(.gesture, amount: 1, device: device)
+                accumulate(gesture.kind, amount: 1, device: device)
             }
         }
+    }
+
+    /// A Force click is a deep press: the pressure stage crosses into 2. Only report the crossing,
+    /// since the trackpad streams pressure events continuously while the finger is down.
+    private func isForceClick(_ event: CGEvent) -> Bool {
+        guard let nsEvent = NSEvent(cgEvent: event) else { return false }
+        let stage = nsEvent.stage
+        defer { lastPressureStage = stage }
+        return stage >= 2 && lastPressureStage < 2
     }
 
     func handleKeyEvent(_ event: CGEvent) {
