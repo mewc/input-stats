@@ -343,7 +343,9 @@ struct BreakdownSection: View {
 
     @State private var rangeDays = 7  // 1 = today
     @State private var totals: [EventKind: Int] = [:]
+    @State private var rate: EventStore.RateStats = .empty
     @State private var perDevice: [(device: InputDevice, totals: [EventKind: Int])] = []
+    @State private var perDisplay: [(display: DisplayTarget, totals: [EventKind: Int])] = []
     @State private var refreshTimer: Timer?
 
     private let columns = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
@@ -371,9 +373,11 @@ struct BreakdownSection: View {
                 VStack(alignment: .leading, spacing: 14) {
                     if family == .keys {
                         keyTiles
+                        pace
                         composition
                     } else {
                         mouseTiles
+                        screenTable
                     }
                     if byDevice {
                         deviceTable
@@ -405,6 +409,28 @@ struct BreakdownSection: View {
                      subtitle: "not counted as keys", color: .cyan)
             StatTile(title: "Backspace rate", value: percentLabel(total(.keyBackspace), of: keys),
                      subtitle: "\(fullNumber(total(.keyBackspace))) deletes", color: EventKind.keyBackspace.color)
+        }
+    }
+
+    /// Typing pace measured over *active* minutes, so idle time doesn't flatten it.
+    /// Words use the standard 5-characters convention. Composition kinds only exist for keystrokes
+    /// recorded since they shipped, so a window that predates them falls back to all keys — mixing
+    /// the two would divide a partial numerator by a full history and report nonsense.
+    private var pace: some View {
+        let keys = total(.key)
+        let typed = total(.keyLetter) + total(.keyDigit) + total(.keySpace)
+        let composed = EventKind.keyCompositionKinds.reduce(0) { $0 + total($1) }
+        let hasComposition = keys > 0 && composed >= keys * 9 / 10
+        let characters = hasComposition ? typed : keys
+        let wpm = rate.activeMinutes > 0 ? Double(characters) / Double(rate.activeMinutes) / 5.0 : 0
+        return LazyVGrid(columns: columns, spacing: 8) {
+            StatTile(title: "Typing pace", value: String(format: "%.0f wpm", wpm),
+                     subtitle: hasComposition ? "letters + digits + space ÷ 5" : "all keys ÷ 5",
+                     color: .purple)
+            StatTile(title: "Peak minute", value: fullNumber(rate.peakPerMinute),
+                     subtitle: "keys in your busiest minute", color: .orange)
+            StatTile(title: "Keys / active min", value: String(format: "%.0f", rate.perActiveMinute),
+                     subtitle: "over \(fullNumber(rate.activeMinutes)) active min", color: .teal)
         }
     }
 
@@ -451,15 +477,70 @@ struct BreakdownSection: View {
                      subtitle: "\(compactNumber(total(.click))) left · \(compactNumber(total(.rightClick))) right · \(compactNumber(total(.otherClick))) other",
                      color: EventKind.click.color)
             StatTile(title: "Double clicks", value: fullNumber(total(.doubleClick)),
-                     subtitle: "\(percentLabel(total(.doubleClick), of: total(.click))) of left clicks", color: .mint)
+                     subtitle: "\(fullNumber(total(.tripleClick))) triple · \(percentLabel(total(.doubleClick), of: total(.click))) of left",
+                     color: .mint)
+            StatTile(title: "Side buttons", value: fullNumber(total(.backClick) + total(.forwardClick)),
+                     subtitle: "\(compactNumber(total(.backClick))) back · \(compactNumber(total(.forwardClick))) forward",
+                     color: .indigo)
+            StatTile(title: "Force clicks", value: fullNumber(total(.forceClick)),
+                     subtitle: "trackpad deep press", color: .pink)
             StatTile(title: "Gestures", value: fullNumber(total(.gesture)),
-                     subtitle: "pinch · rotate · swipe · smart zoom", color: EventKind.gesture.color)
-            StatTile(title: "Scroll ticks", value: fullNumber(total(.scroll)), color: EventKind.scroll.color)
+                     subtitle: gestureSubtitle, color: EventKind.gesture.color)
+            StatTile(title: "Scroll ticks", value: fullNumber(total(.scroll)),
+                     subtitle: "\(percentLabel(total(.scrollHorizontal), of: total(.scroll))) horizontal",
+                     color: EventKind.scroll.color)
+            StatTile(title: "Scroll distance", value: "\(compactNumber(total(.scrollDistance))) px",
+                     subtitle: "continuous scrolling only", color: .brown)
             StatTile(title: "Momentum scroll", value: fullNumber(total(.scrollMomentum)),
                      subtitle: "\(percentLabel(total(.scrollMomentum), of: total(.scroll))) coasting after a flick", color: .yellow)
             StatTile(title: "Movement", value: "\(compactNumber(total(.move))) px", color: EventKind.move.color)
             StatTile(title: "Dragging", value: "\(compactNumber(total(.drag))) px",
                      subtitle: "\(percentLabel(total(.drag), of: total(.move))) of movement", color: .red)
+        }
+    }
+
+    /// "3 pinch · 2 swipe" — only the gesture types that actually occurred.
+    private var gestureSubtitle: String {
+        let parts = EventKind.gestureKinds
+            .filter { total($0) > 0 }
+            .map { "\(compactNumber(total($0))) \($0.label.lowercased())" }
+        return parts.isEmpty ? "pinch · rotate · swipe · smart zoom" : parts.joined(separator: " · ")
+    }
+
+    /// Where you point: clicks / scroll / movement split by screen. Only shown once there is more
+    /// than one screen's worth of data — on a single-display Mac it would just restate the totals.
+    @ViewBuilder
+    private var screenTable: some View {
+        let rows = perDisplay.filter { entry in
+            EventKind.clickKinds.contains { (entry.totals[$0] ?? 0) > 0 } || (entry.totals[.move] ?? 0) > 0
+        }
+        if rows.count > 1 {
+            let moveSum = rows.reduce(0) { $0 + ($1.totals[.move] ?? 0) }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("By screen").font(.subheadline).foregroundColor(.secondary)
+                VStack(spacing: 0) {
+                    ForEach(rows, id: \.display.id) { entry in
+                        let clicks = EventKind.clickKinds.reduce(0) { $0 + (entry.totals[$1] ?? 0) }
+                        let move = entry.totals[.move] ?? 0
+                        HStack(spacing: 8) {
+                            Text(entry.display.displayName).font(.callout).lineLimit(1)
+                            Spacer()
+                            Text("\(compactNumber(clicks)) clicks")
+                                .font(.caption.monospacedDigit()).foregroundColor(.secondary)
+                                .frame(width: 80, alignment: .trailing)
+                            Text("\(compactNumber(entry.totals[.scroll] ?? 0)) scroll")
+                                .font(.caption.monospacedDigit()).foregroundColor(.secondary)
+                                .frame(width: 80, alignment: .trailing)
+                            Text(percentLabel(move, of: moveSum))
+                                .font(.caption.monospacedDigit()).foregroundColor(.secondary)
+                                .frame(width: 50, alignment: .trailing)
+                                .help("\(fullNumber(move)) px of pointer movement")
+                        }
+                        .padding(.vertical, 6)
+                        Divider()
+                    }
+                }
+            }
         }
     }
 
@@ -514,6 +595,20 @@ struct BreakdownSection: View {
     private func reload() {
         let start = startBucket(daysBack: rangeDays)
         let end = EventStore.bucket() + EventStore.baseBucketSeconds
+        EventStore.shared.rateStats(kinds: family == .keys ? [.key] : EventKind.clickKinds,
+                                    startBucket: start, endBucket: end) { self.rate = $0 }
+        if family == .mouse {
+            EventStore.shared.displays { screens in
+                EventStore.shared.totalsByDisplay(startBucket: start, endBucket: end) { byDisplay in
+                    var rows: [(display: DisplayTarget, totals: [EventKind: Int])] = []
+                    for (displayID, kinds) in byDisplay {
+                        rows.append((screens[displayID] ?? .unknown, kinds))
+                    }
+                    rows.sort { ($0.totals[.move] ?? 0) > ($1.totals[.move] ?? 0) }
+                    self.perDisplay = rows
+                }
+            }
+        }
         EventStore.shared.devices { devs in
             EventStore.shared.totalsByDevice(startBucket: start, endBucket: end) { byDevice in
                 var sum: [EventKind: Int] = [:]

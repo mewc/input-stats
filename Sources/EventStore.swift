@@ -42,6 +42,24 @@ enum EventKind: Int, CaseIterable, Identifiable {
     case scrollMomentum = 19
     /// Trackpad gestures: pinch, rotate, swipe, smart-zoom.
     case gesture = 20
+    /// Gesture types (subsets of `gesture`).
+    case gesturePinch = 21
+    case gestureRotate = 22
+    case gestureSwipe = 23
+    case gestureSmartZoom = 24
+
+    /// Scroll events carrying a horizontal component (subset of `scroll`).
+    case scrollHorizontal = 25
+    /// Continuous (trackpad/Magic Mouse) scroll distance in pixels — a distance, not a count.
+    case scrollDistance = 26
+
+    /// Side-button clicks (subsets of `otherClick`).
+    case backClick = 27
+    case forwardClick = 28
+    /// Third click of a triple-click (subset of `click`).
+    case tripleClick = 29
+    /// Trackpad Force clicks (deep press past the second stage).
+    case forceClick = 30
 
     var id: Int { rawValue }
 
@@ -68,15 +86,26 @@ enum EventKind: Int, CaseIterable, Identifiable {
         case .drag: return "Dragging"
         case .scrollMomentum: return "Momentum scroll"
         case .gesture: return "Gestures"
+        case .gesturePinch: return "Pinch"
+        case .gestureRotate: return "Rotate"
+        case .gestureSwipe: return "Swipe"
+        case .gestureSmartZoom: return "Smart zoom"
+        case .scrollHorizontal: return "Horizontal scroll"
+        case .scrollDistance: return "Scroll distance"
+        case .backClick: return "Back button"
+        case .forwardClick: return "Forward button"
+        case .tripleClick: return "Triple clicks"
+        case .forceClick: return "Force clicks"
         }
     }
 
-    /// Movement and dragging are distances (pixels), not counts — charted separately.
-    var isDistance: Bool { self == .move || self == .drag }
+    /// Movement, dragging and continuous scrolling are distances (pixels), not counts.
+    var isDistance: Bool { self == .move || self == .drag || self == .scrollDistance }
 
     static let clickKinds: [EventKind] = [.click, .rightClick, .otherClick]
     static let keyCompositionKinds: [EventKind] = [.keyLetter, .keyDigit, .keySpace, .keyEnter,
                                                    .keyBackspace, .keyNavigation, .keyOther]
+    static let gestureKinds: [EventKind] = [.gesturePinch, .gestureRotate, .gestureSwipe, .gestureSmartZoom]
 }
 
 // MARK: - Input Devices
@@ -161,6 +190,35 @@ struct InputDeviceDescriptor {
     }
 }
 
+// MARK: - Displays
+
+/// A screen that pointer input happened on. Rows live in the `displays` table; `id` is the foreign
+/// key on each event row (0 = unknown, e.g. keystrokes and rows from before screen tracking).
+struct DisplayTarget: Identifiable, Hashable {
+    static let unknownID = 0
+
+    let id: Int
+    let key: String
+    let name: String
+    let isBuiltIn: Bool
+
+    var displayName: String {
+        if id == DisplayTarget.unknownID { return "Unknown screen" }
+        if !name.isEmpty { return name }
+        return isBuiltIn ? "Built-in Display" : "External Display"
+    }
+
+    static let unknown = DisplayTarget(id: unknownID, key: "unknown", name: "", isBuiltIn: false)
+}
+
+/// What the resolver learns about a screen. `key` must stay stable across unplug/replug and
+/// reboots, so it is the display's UUID when available, else its name plus built-in flag.
+struct DisplayDescriptor {
+    let key: String
+    let name: String
+    let isBuiltIn: Bool
+}
+
 // SQLite wants this destructor for transient (Swift-owned) strings bound to statements.
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
@@ -185,6 +243,7 @@ final class EventStore {
         let kind: Int
         let app: String
         let device: Int
+        let display: Int
     }
 
     struct DeviceSeriesPoint: Identifiable {
@@ -271,7 +330,8 @@ final class EventStore {
     /// Schema versions (PRAGMA user_version):
     /// 0 — events(bucket, kind, app, count)
     /// 1 — events gains a `device` column (PK includes it) + `devices` table
-    private static let schemaVersion = 1
+    /// 2 — events gains a `display` column (PK includes it) + `displays` table
+    private static let schemaVersion = 2
 
     private func migrate() {
         exec("""
@@ -285,6 +345,17 @@ final class EventStore {
                 transport  TEXT NOT NULL DEFAULT '',
                 builtin    INTEGER NOT NULL DEFAULT 0,
                 software   INTEGER NOT NULL DEFAULT 0,
+                first_seen INTEGER NOT NULL,
+                last_seen  INTEGER NOT NULL
+            );
+            """)
+
+        exec("""
+            CREATE TABLE IF NOT EXISTS displays (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                key        TEXT NOT NULL UNIQUE,
+                name       TEXT NOT NULL,
+                builtin    INTEGER NOT NULL DEFAULT 0,
                 first_seen INTEGER NOT NULL,
                 last_seen  INTEGER NOT NULL
             );
@@ -322,6 +393,26 @@ final class EventStore {
                     """)
             }
             exec("PRAGMA user_version = 1;")
+            exec("COMMIT;")
+        }
+        if version < 2 {
+            // Same rebuild dance as v1: the primary key has to grow a column.
+            exec("BEGIN;")
+            exec("""
+                CREATE TABLE events_v2 (
+                    bucket  INTEGER NOT NULL,
+                    kind    INTEGER NOT NULL,
+                    app     TEXT NOT NULL,
+                    device  INTEGER NOT NULL DEFAULT 0,
+                    display INTEGER NOT NULL DEFAULT 0,
+                    count   INTEGER NOT NULL,
+                    PRIMARY KEY (bucket, kind, app, device, display)
+                );
+                """)
+            exec("INSERT INTO events_v2(bucket, kind, app, device, display, count) SELECT bucket, kind, app, device, 0, count FROM events;")
+            exec("DROP TABLE events;")
+            exec("ALTER TABLE events_v2 RENAME TO events;")
+            exec("PRAGMA user_version = 2;")
             exec("COMMIT;")
         }
         exec("CREATE INDEX IF NOT EXISTS idx_events_bucket ON events(bucket);")
@@ -374,8 +465,8 @@ final class EventStore {
     private func upsertLocked(bucket: Int, counts: [BucketKey: Int]) {
         guard let db else { return }
         let sql = """
-            INSERT INTO events(bucket, kind, app, device, count) VALUES(?, ?, ?, ?, ?)
-            ON CONFLICT(bucket, kind, app, device) DO UPDATE SET count = count + excluded.count;
+            INSERT INTO events(bucket, kind, app, device, display, count) VALUES(?, ?, ?, ?, ?, ?)
+            ON CONFLICT(bucket, kind, app, device, display) DO UPDATE SET count = count + excluded.count;
             """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
@@ -388,7 +479,8 @@ final class EventStore {
             sqlite3_bind_int(stmt, 2, Int32(key.kind))
             sqlite3_bind_text(stmt, 3, key.app, -1, SQLITE_TRANSIENT)
             sqlite3_bind_int64(stmt, 4, Int64(key.device))
-            sqlite3_bind_int64(stmt, 5, Int64(value))
+            sqlite3_bind_int64(stmt, 5, Int64(key.display))
+            sqlite3_bind_int64(stmt, 6, Int64(value))
             sqlite3_step(stmt)
         }
         sqlite3_exec(db, "COMMIT;", nil, nil, nil)
@@ -495,6 +587,60 @@ final class EventStore {
             )
         }
         return buckets
+    }
+
+    /// Rate statistics over a window, derived from per-minute totals of `kinds`.
+    struct RateStats {
+        /// Minutes in which at least one event happened.
+        let activeMinutes: Int
+        /// Highest single-minute total.
+        let peakPerMinute: Int
+        /// Total across the window.
+        let total: Int
+
+        /// Average per *active* minute — "how fast when you're actually going", not diluted by idle time.
+        var perActiveMinute: Double {
+            activeMinutes > 0 ? Double(total) / Double(activeMinutes) : 0
+        }
+
+        static let empty = RateStats(activeMinutes: 0, peakPerMinute: 0, total: 0)
+    }
+
+    /// Fold per-minute totals into rate stats. Pure seam, shared with the tests.
+    static func rateStats(minuteTotals: [Int]) -> RateStats {
+        let active = minuteTotals.filter { $0 > 0 }
+        return RateStats(activeMinutes: active.count,
+                         peakPerMinute: active.max() ?? 0,
+                         total: active.reduce(0, +))
+    }
+
+    /// Per-minute rate stats for `kinds` over a window. Completion delivered on the main queue.
+    func rateStats(kinds: [EventKind],
+                   startBucket: Int,
+                   endBucket: Int,
+                   completion: @escaping (RateStats) -> Void) {
+        queue.async { [weak self] in
+            var minutes: [Int] = []
+            if let db = self?.db, !kinds.isEmpty {
+                let kindList = kinds.map { String($0.rawValue) }.joined(separator: ",")
+                let sql = """
+                    SELECT SUM(count) FROM events
+                    WHERE bucket >= ? AND bucket < ? AND kind IN (\(kindList))
+                    GROUP BY bucket / 60;
+                    """
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_int64(stmt, 1, Int64(startBucket))
+                    sqlite3_bind_int64(stmt, 2, Int64(endBucket))
+                    while sqlite3_step(stmt) == SQLITE_ROW {
+                        minutes.append(Int(sqlite3_column_int64(stmt, 0)))
+                    }
+                }
+                sqlite3_finalize(stmt)
+            }
+            let stats = EventStore.rateStats(minuteTotals: minutes)
+            DispatchQueue.main.async { completion(stats) }
+        }
     }
 
     // MARK: Pruning
@@ -818,6 +964,92 @@ final class EventStore {
                         let device = Int(sqlite3_column_int64(stmt, 0))
                         guard let kind = EventKind(rawValue: Int(sqlite3_column_int(stmt, 1))) else { continue }
                         result[device, default: [:]][kind] = Int(sqlite3_column_int64(stmt, 2))
+                    }
+                }
+                sqlite3_finalize(stmt)
+            }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+    // MARK: Displays
+
+    /// Look up (or create) the row for a screen and return its id. Called once per screen by the
+    /// resolver, which caches the result — never per event.
+    func displayID(for descriptor: DisplayDescriptor) -> Int {
+        var id = DisplayTarget.unknownID
+        queue.sync { id = displayIDLocked(for: descriptor) }
+        return id
+    }
+
+    private func displayIDLocked(for descriptor: DisplayDescriptor) -> Int {
+        guard let db else { return DisplayTarget.unknownID }
+        let now = Int64(Date().timeIntervalSince1970)
+        let upsert = """
+            INSERT INTO displays(key, name, builtin, first_seen, last_seen) VALUES(?, ?, ?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                last_seen = excluded.last_seen,
+                name = CASE WHEN excluded.name = '' THEN name ELSE excluded.name END;
+            """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, upsert, -1, &stmt, nil) == SQLITE_OK else { return DisplayTarget.unknownID }
+        sqlite3_bind_text(stmt, 1, descriptor.key, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 2, descriptor.name, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int(stmt, 3, descriptor.isBuiltIn ? 1 : 0)
+        sqlite3_bind_int64(stmt, 4, now)
+        sqlite3_bind_int64(stmt, 5, now)
+        sqlite3_step(stmt)
+        sqlite3_finalize(stmt)
+
+        var select: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT id FROM displays WHERE key = ?;", -1, &select, nil) == SQLITE_OK else {
+            return DisplayTarget.unknownID
+        }
+        defer { sqlite3_finalize(select) }
+        sqlite3_bind_text(select, 1, descriptor.key, -1, SQLITE_TRANSIENT)
+        return sqlite3_step(select) == SQLITE_ROW ? Int(sqlite3_column_int64(select, 0)) : DisplayTarget.unknownID
+    }
+
+    /// Every screen we've attributed input to, keyed by id. Completion delivered on the main queue.
+    func displays(completion: @escaping ([Int: DisplayTarget]) -> Void) {
+        queue.async { [weak self] in
+            var result: [Int: DisplayTarget] = [DisplayTarget.unknownID: .unknown]
+            if let db = self?.db {
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, "SELECT id, key, name, builtin FROM displays;", -1, &stmt, nil) == SQLITE_OK {
+                    while sqlite3_step(stmt) == SQLITE_ROW {
+                        let id = Int(sqlite3_column_int64(stmt, 0))
+                        result[id] = DisplayTarget(id: id,
+                                                   key: String(cString: sqlite3_column_text(stmt, 1)),
+                                                   name: String(cString: sqlite3_column_text(stmt, 2)),
+                                                   isBuiltIn: sqlite3_column_int(stmt, 3) != 0)
+                    }
+                }
+                sqlite3_finalize(stmt)
+            }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    /// Totals of every kind per screen over a window. Completion delivered on the main queue.
+    func totalsByDisplay(startBucket: Int,
+                         endBucket: Int,
+                         completion: @escaping ([Int: [EventKind: Int]]) -> Void) {
+        queue.async { [weak self] in
+            var result: [Int: [EventKind: Int]] = [:]
+            if let db = self?.db {
+                let sql = """
+                    SELECT display, kind, SUM(count) FROM events
+                    WHERE bucket >= ? AND bucket < ?
+                    GROUP BY display, kind;
+                    """
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_int64(stmt, 1, Int64(startBucket))
+                    sqlite3_bind_int64(stmt, 2, Int64(endBucket))
+                    while sqlite3_step(stmt) == SQLITE_ROW {
+                        let display = Int(sqlite3_column_int64(stmt, 0))
+                        guard let kind = EventKind(rawValue: Int(sqlite3_column_int(stmt, 1))) else { continue }
+                        result[display, default: [:]][kind] = Int(sqlite3_column_int64(stmt, 2))
                     }
                 }
                 sqlite3_finalize(stmt)

@@ -14,7 +14,10 @@ struct EventStoreTests {
         classifiesKeyCodes()
         countsModifierPressesNotReleases()
         deviceKeysMergeWiredAndWirelessModes()
-        print("InputStats event-store tests: 9 passed")
+        ratesUseActiveMinutesOnly()
+        shippedKindRawValuesAreStable()
+        displayIdentityIsStableAndNamed()
+        print("InputStats event-store tests: 12 passed")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -129,6 +132,41 @@ struct EventStoreTests {
         expect(InputDevice.unattributed.displayName == "Unattributed", "legacy rows label")
         expect(InputDeviceDescriptor.software(role: .keyboard).key != InputDeviceDescriptor.software(role: .pointer).key,
                "software devices are per role")
+    }
+
+    private static func ratesUseActiveMinutesOnly() {
+        let stats = EventStore.rateStats(minuteTotals: [120, 0, 300, 0, 0, 60])
+        expect(stats.activeMinutes == 3, "idle minutes counted as active")
+        expect(stats.peakPerMinute == 300, "peak minute wrong")
+        expect(stats.total == 480, "total wrong")
+        expect(stats.perActiveMinute == 160, "average should divide by active minutes only")
+        expect(EventStore.rateStats(minuteTotals: []).perActiveMinute == 0, "empty window must not divide by zero")
+    }
+
+    /// Raw values are persisted in SQLite and in shipped databases — renumbering orphans user data.
+    private static func shippedKindRawValuesAreStable() {
+        let expected: [(EventKind, Int)] = [
+            (.key, 0), (.click, 1), (.scroll, 2), (.rightClick, 3), (.move, 4), (.otherClick, 5),
+            (.keyRepeat, 6), (.keySynthetic, 7), (.keyShortcut, 8), (.modifier, 9),
+            (.keyLetter, 10), (.keyDigit, 11), (.keySpace, 12), (.keyEnter, 13),
+            (.keyBackspace, 14), (.keyNavigation, 15), (.keyOther, 16),
+            (.doubleClick, 17), (.drag, 18), (.scrollMomentum, 19), (.gesture, 20),
+        ]
+        for (kind, raw) in expected {
+            expect(kind.rawValue == raw, "\(kind.label) raw value moved from \(raw) to \(kind.rawValue)")
+        }
+        expect(Set(EventKind.allCases.map(\.rawValue)).count == EventKind.allCases.count, "duplicate raw values")
+    }
+
+    private static func displayIdentityIsStableAndNamed() {
+        let external = DisplayTarget(id: 1, key: "UUID-A", name: "LG HDR WQHD", isBuiltIn: false)
+        expect(external.displayName == "LG HDR WQHD", "named screens keep their name")
+        let unnamedBuiltIn = DisplayTarget(id: 2, key: "UUID-B", name: "", isBuiltIn: true)
+        expect(unnamedBuiltIn.displayName == "Built-in Display", "unnamed built-in screen label")
+        let unnamedExternal = DisplayTarget(id: 3, key: "UUID-C", name: "", isBuiltIn: false)
+        expect(unnamedExternal.displayName == "External Display", "unnamed external screen label")
+        expect(DisplayTarget.unknown.displayName == "Unknown screen", "rows without a screen")
+        expect(DisplayTarget.unknownID == 0, "unknown screen must stay the zero default")
     }
 
     private static func row(_ minute: Int, _ kind: EventKind, _ app: String, _ value: Int) -> EventStore.MinuteRow {
