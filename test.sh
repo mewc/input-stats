@@ -5,6 +5,9 @@ mkdir -p .build
 xcrun swiftc Sources/Models.swift Tests/SyncDataTests.swift -o .build/InputStatsModelTests
 .build/InputStatsModelTests
 
+xcrun swiftc Sources/CredentialStore.swift Tests/KeychainTests.swift -o .build/InputStatsKeychainTests
+.build/InputStatsKeychainTests
+
 xcrun swiftc Sources/EventStore.swift Sources/InputClassification.swift Tests/EventStoreTests.swift -lsqlite3 -o .build/InputStatsEventStoreTests
 .build/InputStatsEventStoreTests
 
