@@ -15,8 +15,10 @@ struct SyncDataTests {
         try minutePayloadContainsCountsButNoInputContent()
         try minutePayloadUsesMinuteTimestampAndClickTypes()
         legacyCredentialsRefreshMissingServerDeviceIdentity()
+        handoffLinkRoutesEachBrowserRedirect()
+        handoffLinkExplainsEveryRejection()
         compactCountUsesAtMostThreeSignificantDigits()
-        print("InputStats model tests: 13 passed")
+        print("InputStats model tests: 15 passed")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -185,6 +187,39 @@ struct SyncDataTests {
         expect(CloudSyncMigration.needsServerDeviceIdentity(hasToken: true, hasServerDeviceID: false), "legacy credentials did not request identity refresh")
         expect(!CloudSyncMigration.needsServerDeviceIdentity(hasToken: true, hasServerDeviceID: true), "known identity refreshed unnecessarily")
         expect(!CloudSyncMigration.needsServerDeviceIdentity(hasToken: false, hasServerDeviceID: false), "missing credential requested identity refresh")
+    }
+
+    private static func handoffLinkRoutesEachBrowserRedirect() {
+        let classify = { (s: String) in CloudHandoffLink.classify(URL(string: s)!, expectedScheme: "inputstats") }
+
+        expect(classify("inputstats://pair") == .pair, "pair link did not route to pairing")
+        expect(classify("inputstats://connected?code=isl_abc") == .connect(code: "isl_abc"), "PKCE handoff did not route to completion")
+        expect(classify("inputstats://connected?token=tok_abc") == .legacyToken("tok_abc"), "legacy token handoff stopped working")
+        expect(classify("INPUTSTATS://pair") == .pair, "scheme match became case-sensitive")
+    }
+
+    /// A stale dev bundle claiming the release `inputstats://` scheme used to swallow
+    /// the handoff silently, so "Open Input Stats" looked like a dead button.
+    private static func handoffLinkExplainsEveryRejection() {
+        let classify = { (s: String) in CloudHandoffLink.classify(URL(string: s)!, expectedScheme: "inputstats-dev") }
+
+        guard case .rejected(let wrongBuild) = classify("inputstats://connected?code=isl_abc") else {
+            fatalError("release handoff was accepted by a dev build")
+        }
+        expect(wrongBuild.contains("inputstats://"), "rejection did not name the scheme that arrived")
+
+        guard case .rejected = classify("inputstats-dev://connected") else {
+            fatalError("handoff with no code was accepted")
+        }
+        guard case .rejected = classify("inputstats-dev://connected?code=") else {
+            fatalError("handoff with an empty code was accepted")
+        }
+        guard case .rejected = classify("inputstats-dev://whatever") else {
+            fatalError("unknown link action was accepted")
+        }
+        guard case .rejected = classify("connected?code=isl_abc") else {
+            fatalError("schemeless link was accepted")
+        }
     }
 
     private static func sampleMinutePayload() -> MinuteBatchPayload {

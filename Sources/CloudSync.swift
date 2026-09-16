@@ -117,20 +117,17 @@ final class CloudSync {
         }.resume()
     }
 
-    /// Handle the `<scheme>://connected?token=…` redirect from the browser.
-    func handleCallback(url: URL) {
-        guard url.scheme == appURLScheme,
-              url.host == "connected",
-              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            return
-        }
-        if let code = comps.queryItems?.first(where: { $0.name == "code" })?.value,
-           !code.isEmpty {
-            completePairing(code: code)
-            return
-        }
-        guard let token = comps.queryItems?.first(where: { $0.name == "token" })?.value,
-              !token.isEmpty else { return }
+    /// Surface a browser handoff we could not act on. Routing lives in
+    /// `CloudHandoffLink.classify`; this just puts the reason in the menu so a
+    /// bad link reads as an error rather than as nothing happening at all.
+    func reportLinkFailure(_ message: String) {
+        reportError(message)
+    }
+
+    /// Finish the original `<scheme>://connected?token=…` flow, which released
+    /// clients still use: the token alone is the credential, and the signing
+    /// secret arrives from `provision`.
+    func acceptLegacyToken(_ token: String) {
         Keychain.delete(secretAccount)
         guard Keychain.set(token, for: tokenAccount) else {
             reportError("Could not save the sign-in token.")

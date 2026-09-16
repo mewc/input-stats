@@ -145,12 +145,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func handleURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent: NSAppleEventDescriptor) {
         guard let s = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
-              let url = URL(string: s) else { return }
-        if url.scheme == appURLScheme, url.host == "pair" {
-            handlePairRequest()
+              let url = URL(string: s) else {
+            cloudSync.reportLinkFailure("Sign-in link could not be read.")
             return
         }
-        cloudSync.handleCallback(url: url)
+        switch CloudHandoffLink.classify(url, expectedScheme: appURLScheme) {
+        case .pair:
+            handlePairRequest()
+        case .connect(let code):
+            cloudSync.completePairing(code: code)
+        case .legacyToken(let token):
+            cloudSync.acceptLegacyToken(token)
+        case .rejected(let reason):
+            cloudSync.reportLinkFailure(reason)
+        }
     }
 
     /// `<scheme>://pair` — the web dashboard's "Pair this Mac" button. Starts the
