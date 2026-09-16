@@ -1,48 +1,158 @@
 import Foundation
 import Security
 
-/// Minimal Keychain wrapper for storing the cloud device token + signing secret.
-/// Generic-password items scoped to this app; values are small strings.
+/// Keychain storage for the cloud device token, signing secret and device ID.
+///
+/// Two properties matter here, both learned the hard way:
+///
+/// 1. **One item, not four.** The app is signed with a self-signed certificate
+///    that chains to no trusted root, so macOS cannot pin the Keychain ACL to a
+///    stable designated requirement and pins the binary hash instead. Every new
+///    build invalidates it and the user is asked to authorize again — once per
+///    item. Keeping a single item makes that one prompt instead of four.
+/// 2. **Read once per launch.** `isConnected` alone used to hit the Keychain
+///    twice, and it is consulted on every menu rebuild and every sync tick, so a
+///    single stale ACL turned into a prompt storm. Values are cached in memory
+///    for the life of the process; writes and deletes keep the cache coherent.
 enum Keychain {
-    // Keep dev sign-ins from overwriting the production app's device token and signing secret.
+    // Keep dev sign-ins from overwriting the production app's credentials.
     private static var service: String {
         isDevBuild ? "com.mewc.input-stats.cloud.dev" : "com.mewc.input-stats.cloud"
     }
 
+    /// Account name of the consolidated item.
+    private static let storeAccount = "cloudCredentials"
+
+    /// Items written before consolidation, migrated on first access.
+    private static let legacyAccounts = [
+        "deviceToken", "signingSecret", "serverDeviceID", "pendingPairingVerifier",
+    ]
+
+    /// Build that last re-anchored the Keychain ACL.
+    private static let aclBuildKey = "keychainACLBuild"
+
+    private static let lock = NSLock()
+    private static var cache: CredentialStore?
+    private static var loaded = false
+
     @discardableResult
     static func set(_ value: String, for account: String) -> Bool {
-        let data = Data(value.utf8)
-        let updates: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
-        ]
-        let updateStatus = SecItemUpdate(query(for: account) as CFDictionary, updates as CFDictionary)
-        if updateStatus == errSecSuccess { return true }
-        guard updateStatus == errSecItemNotFound else { return false }
+        lock.lock()
+        defer { lock.unlock() }
+        var store = loadLocked()
+        store.set(value, for: account)
+        return writeLocked(store)
+    }
 
-        var attrs = query(for: account)
+    static func get(_ account: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return loadLocked().value(for: account)
+    }
+
+    @discardableResult
+    static func delete(_ account: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        var store = loadLocked()
+        guard store.value(for: account) != nil else { return true }
+        store.remove(account)
+        return writeLocked(store)
+    }
+
+    // MARK: - Internals (call with `lock` held)
+
+    private static func loadLocked() -> CredentialStore {
+        if let cache, loaded { return cache }
+        let result = readItem(storeAccount)
+        if let store = result.data.flatMap(CredentialStore.decode) {
+            cache = store
+            loaded = true
+            rewriteAfterUpgradeLocked(store)
+            return store
+        }
+        // A denied or impossible prompt is not the same as "no credentials". If
+        // we cached that, the app would report itself signed out for the rest of
+        // the session and invite the user to pair an already-paired Mac.
+        if result.wasRefused { return CredentialStore() }
+
+        let (migrated, refused) = migrateLegacyLocked()
+        guard !refused else { return migrated }
+        cache = migrated
+        loaded = true
+        return migrated
+    }
+
+    /// A self-signed binary cannot be pinned by designated requirement, so the
+    /// ACL tracks the exact build that wrote the item and every app update costs
+    /// one authorization prompt. Rewriting the item after a successful read
+    /// re-anchors the ACL to the new build, so the prompt happens once per
+    /// update instead of once per launch.
+    private static func rewriteAfterUpgradeLocked(_ store: CredentialStore) {
+        guard !store.isEmpty else { return }
+        let defaults = UserDefaults.standard
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+        guard defaults.string(forKey: aclBuildKey) != build else { return }
+        guard writeItem(store) else { return }
+        defaults.set(build, forKey: aclBuildKey)
+    }
+
+    /// Reads the pre-consolidation items once, folds them into a single item and
+    /// removes the originals. Costs one prompt per surviving legacy item, once.
+    private static func migrateLegacyLocked() -> (store: CredentialStore, refused: Bool) {
+        var store = CredentialStore()
+        var found: [String] = []
+        var refused = false
+        for account in legacyAccounts {
+            let result = readItem(account)
+            if result.wasRefused { refused = true; continue }
+            guard let data = result.data, let value = String(data: data, encoding: .utf8) else { continue }
+            store.set(value, for: account)
+            found.append(account)
+        }
+        guard !found.isEmpty else { return (store, refused) }
+        // Only drop the originals once the consolidated item is safely written,
+        // so a failed write can never strand the user without credentials, and
+        // never while a read was refused: the rest may still hold values.
+        guard writeItem(store), !refused else { return (store, refused) }
+        for account in found { SecItemDelete(query(for: account) as CFDictionary) }
+        return (store, false)
+    }
+
+    private static func writeLocked(_ store: CredentialStore) -> Bool {
+        guard writeItem(store) else { return false }
+        cache = store
+        loaded = true
+        return true
+    }
+
+    private static func writeItem(_ store: CredentialStore) -> Bool {
+        guard let data = store.encoded() else { return false }
+        // Delete first so the ACL is regenerated for the binary doing the write.
+        // SecItemUpdate keeps the original ACL, which is what left upgraded
+        // installs prompting forever.
+        SecItemDelete(query(for: storeAccount) as CFDictionary)
+        var attrs = query(for: storeAccount)
         attrs[kSecValueData as String] = data
         attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         return SecItemAdd(attrs as CFDictionary, nil) == errSecSuccess
     }
 
-    static func get(_ account: String) -> String? {
+    /// `wasRefused` separates "the user dismissed the authorization prompt, or
+    /// one could not be shown" from "there is no such item", which callers must
+    /// not confuse: only the latter means the Mac is unpaired.
+    private static func readItem(_ account: String) -> (data: Data?, wasRefused: Bool) {
         var q = query(for: account)
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var out: AnyObject?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
-              let data = out as? Data,
-              let str = String(data: data, encoding: .utf8) else {
-            return nil
-        }
-        return str
-    }
-
-    @discardableResult
-    static func delete(_ account: String) -> Bool {
-        let status = SecItemDelete(query(for: account) as CFDictionary)
-        return status == errSecSuccess || status == errSecItemNotFound
+        let status = SecItemCopyMatching(q as CFDictionary, &out)
+        if status == errSecSuccess { return (out as? Data, false) }
+        let refused = status == errSecUserCanceled
+            || status == errSecAuthFailed
+            || status == errSecInteractionNotAllowed
+            || status == errSecInteractionRequired
+        return (nil, refused)
     }
 
     private static func query(for account: String) -> [String: Any] {
