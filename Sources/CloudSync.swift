@@ -6,7 +6,7 @@ import AppKit
 ///
 /// A new login uses a short-lived PKCE browser handoff; released clients can
 /// still finish the legacy token/provision flow. Long-lived per-device secrets
-/// live in Keychain. Daily sync and privacy-safe minute uploads are best-effort
+/// live in CredentialStore. Daily sync and privacy-safe minute uploads are best-effort
 /// and never block input handling; iCloud remains the offline fallback.
 final class CloudSync {
     static let shared = CloudSync()
@@ -56,12 +56,12 @@ final class CloudSync {
     /// Fired with a freshly pulled/merged blob from the server.
     var onPulled: ((SyncData) -> Void)?
 
-    var deviceToken: String? { Keychain.get(tokenAccount) }
-    var signingSecret: String? { Keychain.get(secretAccount) }
-    var serverDeviceID: String? { Keychain.get(serverDeviceAccount) }
+    var deviceToken: String? { CredentialStore.get(tokenAccount) }
+    var signingSecret: String? { CredentialStore.get(secretAccount) }
+    var serverDeviceID: String? { CredentialStore.get(serverDeviceAccount) }
     var isConnected: Bool { deviceToken != nil && signingSecret != nil }
     var isConnecting: Bool {
-        (deviceToken != nil && signingSecret == nil) || Keychain.get(pendingVerifierAccount) != nil
+        (deviceToken != nil && signingSecret == nil) || CredentialStore.get(pendingVerifierAccount) != nil
     }
     var accountEmail: String? { UserDefaults.standard.string(forKey: emailKey) }
 
@@ -92,7 +92,7 @@ final class CloudSync {
             pkceChallenge: challenge
         )
         guard let body = try? JSONEncoder().encode(payload),
-              Keychain.set(verifier, for: pendingVerifierAccount) else {
+              CredentialStore.set(verifier, for: pendingVerifierAccount) else {
             reportError("Could not prepare cloud sign-in.")
             return
         }
@@ -109,7 +109,7 @@ final class CloudSync {
                   let data,
                   let response = try? JSONDecoder().decode(PairingStartResponse.self, from: data),
                   let url = URL(string: response.browserUrl) else {
-                Keychain.delete(self.pendingVerifierAccount)
+                CredentialStore.delete(self.pendingVerifierAccount)
                 self.reportError("Cloud sign-in could not be started.")
                 return
             }
@@ -128,8 +128,8 @@ final class CloudSync {
     /// clients still use: the token alone is the credential, and the signing
     /// secret arrives from `provision`.
     func acceptLegacyToken(_ token: String) {
-        Keychain.delete(secretAccount)
-        guard Keychain.set(token, for: tokenAccount) else {
+        CredentialStore.delete(secretAccount)
+        guard CredentialStore.set(token, for: tokenAccount) else {
             reportError("Could not save the sign-in token.")
             return
         }
@@ -139,10 +139,10 @@ final class CloudSync {
     }
 
     func signOut() {
-        Keychain.delete(tokenAccount)
-        Keychain.delete(secretAccount)
-        Keychain.delete(serverDeviceAccount)
-        Keychain.delete(pendingVerifierAccount)
+        CredentialStore.delete(tokenAccount)
+        CredentialStore.delete(secretAccount)
+        CredentialStore.delete(serverDeviceAccount)
+        CredentialStore.delete(pendingVerifierAccount)
         UserDefaults.standard.removeObject(forKey: emailKey)
         setStoredError(nil)
         DispatchQueue.main.async { self.onStateChange?() }
@@ -150,7 +150,7 @@ final class CloudSync {
 
     /// Complete either the custom-URL handoff or a manually entered fallback code.
     func completePairing(code: String) {
-        guard let verifier = Keychain.get(pendingVerifierAccount) else {
+        guard let verifier = CredentialStore.get(pendingVerifierAccount) else {
             reportError("Start sign-in from this Mac before entering a connection code.")
             return
         }
@@ -176,16 +176,16 @@ final class CloudSync {
                 return
             }
 
-            guard Keychain.set(response.deviceToken, for: self.tokenAccount),
-                  Keychain.set(response.signingSecret, for: self.secretAccount),
-                  Keychain.set(response.deviceId, for: self.serverDeviceAccount) else {
-                Keychain.delete(self.tokenAccount)
-                Keychain.delete(self.secretAccount)
-                Keychain.delete(self.serverDeviceAccount)
+            guard CredentialStore.set(response.deviceToken, for: self.tokenAccount),
+                  CredentialStore.set(response.signingSecret, for: self.secretAccount),
+                  CredentialStore.set(response.deviceId, for: self.serverDeviceAccount) else {
+                CredentialStore.delete(self.tokenAccount)
+                CredentialStore.delete(self.secretAccount)
+                CredentialStore.delete(self.serverDeviceAccount)
                 self.reportError("Could not save cloud credentials.")
                 return
             }
-            Keychain.delete(self.pendingVerifierAccount)
+            CredentialStore.delete(self.pendingVerifierAccount)
             if let email = response.email { UserDefaults.standard.set(email, forKey: self.emailKey) }
             self.setStoredError(nil)
             DispatchQueue.main.async {
@@ -215,11 +215,11 @@ final class CloudSync {
                 }
                 return
             }
-            guard Keychain.set(body.signingSecret, for: self.secretAccount) else {
+            guard CredentialStore.set(body.signingSecret, for: self.secretAccount) else {
                 self.reportError("Could not save the sync key.")
                 return
             }
-            _ = Keychain.set(body.deviceId, for: self.serverDeviceAccount)
+            _ = CredentialStore.set(body.deviceId, for: self.serverDeviceAccount)
             if let email = body.email, !email.isEmpty {
                 UserDefaults.standard.set(email, forKey: self.emailKey)
             }
@@ -391,9 +391,9 @@ final class CloudSync {
     }
 
     private func expireCredentials() {
-        Keychain.delete(tokenAccount)
-        Keychain.delete(secretAccount)
-        Keychain.delete(serverDeviceAccount)
+        CredentialStore.delete(tokenAccount)
+        CredentialStore.delete(secretAccount)
+        CredentialStore.delete(serverDeviceAccount)
         UserDefaults.standard.removeObject(forKey: emailKey)
         setStoredError("Cloud session expired. Sign in again.")
         DispatchQueue.main.async { self.onStateChange?() }
