@@ -49,6 +49,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Last trackpad pressure stage, so a Force click counts once per press, not per pressure event.
     private var lastPressureStage: Int = 0
 
+    // Today's keys and clicks per device, for the menu's one-line hardware split.
+    private var todayDeviceSplit: [(name: String, keys: Int, clicks: Int)] = []
+
     // Per-day local totals for clicks and pointer movement (px), keyed by "yyyy-MM-dd".
     // Refreshed async from EventStore when the menu opens; powers the menu's Clicks/Distance sections.
     private var clickDaily: [String: Int] = [:]
@@ -986,8 +989,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         addStatsSection(title: "Keyboard", daily: keyboardDaily(), distance: false)
+        addDeviceSplitRow(keyboard: true)
         theMenu.addItem(NSMenuItem.separator())
         addStatsSection(title: "Clicks", daily: clickDaily, distance: false)
+        addDeviceSplitRow(keyboard: false)
         theMenu.addItem(NSMenuItem.separator())
         addStatsSection(title: "Movement", daily: moveDaily, distance: true)
 
@@ -1065,6 +1070,34 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 keyEquivalent: ""
             ))
         }
+    }
+
+    /// One dimmed line naming today's busiest devices, e.g. "Built-in Keyboard 82% · Keychron 18%".
+    /// Omitted when only one device contributed, where it would just restate the total.
+    private func addDeviceSplitRow(keyboard: Bool) {
+        let contributors = todayDeviceSplit
+            .map { (name: $0.name, count: keyboard ? $0.keys : $0.clicks) }
+            .filter { $0.count > 0 }
+            .sorted { $0.count > $1.count }
+        guard contributors.count > 1 else { return }
+
+        let total = contributors.reduce(0) { $0 + $1.count }
+        let shares = contributors.prefix(3)
+            .map { (name: $0.name, percent: Int((Double($0.count) / Double(total) * 100).rounded())) }
+            .filter { $0.percent > 0 }  // a device that rounds to nothing is noise, not information
+        guard shares.count > 1 else { return }
+        let text = shares.map { "\($0.name) \($0.percent)%" }.joined(separator: " \u{00B7} ")
+
+        let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        item.attributedTitle = NSAttributedString(
+            string: text,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]
+        )
+        theMenu.addItem(item)
     }
 
     /// Render a bold section header followed by the today/yesterday/avg/record rows for `daily`.
@@ -1240,6 +1273,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.clickDaily = clicks
             self.moveDaily = totals[.move] ?? [:]
             self.rebuildMenu()
+        }
+        loadTodayDeviceSplit()
+    }
+
+    /// Today's keys and clicks per device, for the menu's hardware split line.
+    private func loadTodayDeviceSplit() {
+        let startOfDay = EventStore.bucket(for: Calendar.current.startOfDay(for: Date()))
+        let end = EventStore.bucket() + EventStore.baseBucketSeconds
+        eventStore.devices { [weak self] devices in
+            self?.eventStore.totalsByDevice(startBucket: startOfDay, endBucket: end) { totals in
+                guard let self = self else { return }
+                var rows: [(name: String, keys: Int, clicks: Int)] = []
+                for (deviceID, kinds) in totals {
+                    let device = devices[deviceID] ?? .unattributed
+                    let clicks = EventKind.clickKinds.reduce(0) { $0 + (kinds[$1] ?? 0) }
+                    rows.append((device.displayName, kinds[.key] ?? 0, clicks))
+                }
+                self.todayDeviceSplit = rows
+                if self.menuIsOpen { self.rebuildMenu() }
+            }
         }
     }
 

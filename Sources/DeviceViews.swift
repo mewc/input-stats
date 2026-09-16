@@ -344,6 +344,7 @@ struct BreakdownSection: View {
     @State private var rangeDays = 7  // 1 = today
     @State private var totals: [EventKind: Int] = [:]
     @State private var rate: EventStore.RateStats = .empty
+    @State private var paceByDay: [(date: Date, wpm: Double, activeMinutes: Int)] = []
     @State private var perDevice: [(device: InputDevice, totals: [EventKind: Int])] = []
     @State private var perDisplay: [(display: DisplayTarget, totals: [EventKind: Int])] = []
     @State private var layouts: [(layout: LayoutKey, count: Int)] = []
@@ -375,6 +376,7 @@ struct BreakdownSection: View {
                     if family == .keys {
                         keyTiles
                         pace
+                        paceTrend
                         composition
                         layoutRow
                         KeyHeatmapSection(rangeDays: rangeDays)
@@ -456,6 +458,48 @@ struct BreakdownSection: View {
                 }
             }
         }
+    }
+
+    /// Pace per day over the selected range. Idle days are dropped rather than drawn as zero —
+    /// a day you didn't type isn't a slow day.
+    @ViewBuilder
+    private var paceTrend: some View {
+        // "Today" is a single bar, which is the tile above restated — only trend across days.
+        if rangeDays > 1 && paceByDay.count > 1 {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Pace by day").font(.subheadline).foregroundColor(.secondary)
+                Chart {
+                    ForEach(paceByDay, id: \.date) { day in
+                        BarMark(x: .value("Day", day.date, unit: .day), y: .value("wpm", day.wpm))
+                            .foregroundStyle(Color.purple.opacity(0.7))
+                    }
+                    if let average = averageWPM {
+                        RuleMark(y: .value("Average", average))
+                            .foregroundStyle(.secondary.opacity(0.5))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                            .annotation(position: .top, alignment: .leading) {
+                                Text("avg \(Int(average.rounded())) wpm")
+                                    .font(.caption2).foregroundColor(.secondary)
+                            }
+                    }
+                }
+                .chartXAxis {
+                    AxisMarks(values: .stride(by: .day, count: max(1, rangeDays / 7))) { _ in
+                        AxisGridLine()
+                        AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+                    }
+                }
+                .frame(height: 90)
+            }
+        }
+    }
+
+    /// Weighted by active minutes, so a day with two minutes of typing can't swing the average.
+    private var averageWPM: Double? {
+        let minutes = paceByDay.reduce(0) { $0 + $1.activeMinutes }
+        guard minutes > 0 else { return nil }
+        let weighted = paceByDay.reduce(0.0) { $0 + $1.wpm * Double($1.activeMinutes) }
+        return weighted / Double(minutes)
     }
 
     private var composition: some View {
@@ -616,6 +660,25 @@ struct BreakdownSection: View {
         }
     }
 
+    /// wpm per day, using the same 5-characters-per-word convention as the pace tile.
+    private func loadPaceTrend() {
+        guard rangeDays > 1 else {
+            paceByDay = []
+            return
+        }
+        EventStore.shared.rateStatsByDay(kinds: [.key], days: rangeDays) { byDay in
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd"
+            var rows: [(date: Date, wpm: Double, activeMinutes: Int)] = []
+            for (day, stats) in byDay where stats.activeMinutes > 0 {
+                guard let date = formatter.date(from: day) else { continue }
+                rows.append((date, stats.perActiveMinute / 5.0, stats.activeMinutes))
+            }
+            rows.sort { $0.date < $1.date }
+            self.paceByDay = rows
+        }
+    }
+
     private func reload() {
         let start = startBucket(daysBack: rangeDays)
         let end = EventStore.bucket() + EventStore.baseBucketSeconds
@@ -623,6 +686,7 @@ struct BreakdownSection: View {
                                     startBucket: start, endBucket: end) { self.rate = $0 }
         if family == .keys {
             EventStore.shared.layoutUsage(days: rangeDays) { self.layouts = $0 }
+            loadPaceTrend()
         }
         if family == .mouse {
             EventStore.shared.displays { screens in

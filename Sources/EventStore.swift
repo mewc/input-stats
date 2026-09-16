@@ -757,6 +757,39 @@ final class EventStore {
         }
     }
 
+    /// Rate stats per local day for the last `days` days, keyed by "yyyy-MM-dd".
+    /// Completion delivered on the main queue.
+    func rateStatsByDay(kinds: [EventKind],
+                        days: Int,
+                        completion: @escaping ([String: RateStats]) -> Void) {
+        queue.async { [weak self] in
+            var minutesByDay: [String: [Int]] = [:]
+            if let db = self?.db, !kinds.isEmpty {
+                let kindList = kinds.map { String($0.rawValue) }.joined(separator: ",")
+                let cutoff = EventStore.bucket(for: Calendar.current.date(byAdding: .day, value: -(days - 1),
+                                                                          to: Date()) ?? Date())
+                let sql = """
+                    SELECT strftime('%Y-%m-%d', bucket, 'unixepoch', 'localtime') AS day,
+                           bucket / 60 AS minute, SUM(count)
+                    FROM events
+                    WHERE kind IN (\(kindList)) AND bucket >= ?
+                    GROUP BY day, minute;
+                    """
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_int64(stmt, 1, Int64(cutoff))
+                    while sqlite3_step(stmt) == SQLITE_ROW {
+                        let day = String(cString: sqlite3_column_text(stmt, 0))
+                        minutesByDay[day, default: []].append(Int(sqlite3_column_int64(stmt, 2)))
+                    }
+                }
+                sqlite3_finalize(stmt)
+            }
+            let stats = minutesByDay.mapValues { EventStore.rateStats(minuteTotals: $0) }
+            DispatchQueue.main.async { completion(stats) }
+        }
+    }
+
     // MARK: Pruning
 
     private func pruneLocked() {
