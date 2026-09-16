@@ -19,8 +19,14 @@ for arg in "$@"; do
     esac
 done
 
-# Get version from latest git tag (fall back to a default if there are no tags yet)
-VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+# Get the version from the tag being built. Prefer the exact tag at HEAD (in CI, the tag that
+# triggered the release) over "most recent tag" — `git describe --abbrev=0` picks arbitrarily when
+# several tags share a commit, which once stamped a release with a lower version than it published.
+VERSION=$(git describe --tags --exact-match 2>/dev/null | sed 's/^v//')
+if [ -z "$VERSION" ] && [ -n "${GITHUB_REF_NAME:-}" ]; then
+    case "$GITHUB_REF_NAME" in v[0-9]*) VERSION="${GITHUB_REF_NAME#v}" ;; esac
+fi
+[ -z "$VERSION" ] && VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
 [ -z "$VERSION" ] && VERSION="0.1.0"
 echo "Version: $VERSION"
 
