@@ -116,6 +116,7 @@ struct InputDevice: Identifiable, Hashable {
 
     /// Short connection label ("Built-in", "USB", "Bluetooth", ...).
     var connectionLabel: String {
+        if id == InputDevice.unattributedID { return "Before device tracking" }
         if isSoftware { return "Virtual" }
         if isBuiltIn { return "Built-in" }
         switch transport.uppercased() {

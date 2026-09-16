@@ -55,3 +55,10 @@
   - Mouse › Daily: stacked bar by event type (Clicks/Scroll) per day + separate pointer-movement bar chart + per-day list, this Mac.
   - Mouse › Timeseries: Clicks/Scroll multi-line + separate pointer-movement area chart, this Mac.
 - Timeseries views have a span picker (1h/6h/24h/7d/30d) and a resolution drilldown picker gated per span so a chart never exceeds ~720 points (5s blocks only available for spans ≤1h). Daily mouse data is folded into local days from an hourly query (avoids UTC-day misalignment of 86400s buckets).
+
+## Device attribution & granular kinds
+- Every tap event is attributed to the physical device that produced it (built-in keyboard / trackpad vs external keyboard / mouse, with transport). Resolution uses the private `CGEventCopyIOHIDEvent` + `IOHIDEventGetSenderID` (via `dlsym`, see `Sources/InputDevices.swift`) → IORegistry lookup, cached per HID sender. Rows live in the `devices` table; `events.device` is the FK (0 = legacy/unattributed rows from before the schema-v1 migration).
+- Extra `EventKind`s overlay the headline counts and must never be summed with them: key repeats, software-typed (injected) keys, shortcuts, modifier presses, key composition (letter/digit/space/enter/backspace/nav/other), double clicks, drag px, momentum scroll, trackpad gestures. `foldMinuteRows` ignores them so the cloud minute payload is unchanged.
+- UI rolls everything up to Keys / Mouse by default. The History window's **By device** switch (persisted) splits Daily/Timeseries per device; the **Breakdown** view shows the granular stats (plus a per-device table when the switch is on).
+- Karabiner-Elements users: all keys arrive from its virtual HID keyboard, so they attribute to "Karabiner DriverKit VirtualHIDKeyboard" rather than the physical board.
+

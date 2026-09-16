@@ -93,7 +93,8 @@ struct DeviceSplitSection: View {
     }()
 
     private func color(for device: Int) -> Color {
-        guard let index = deviceOrder.firstIndex(of: device) else { return AppColorManager.othersColor }
+        guard device != InputDevice.unattributedID,
+              let index = deviceOrder.firstIndex(of: device) else { return AppColorManager.othersColor }
         return AppColorManager.color(for: index)
     }
 
@@ -296,9 +297,18 @@ struct DeviceSplitSection: View {
         }
     }
 
+    /// Busiest device first; legacy unattributed rows always trail (and stay gray) so real devices
+    /// keep the leading colors.
     private func applyTotals(_ totals: [Int: Int]) {
         deviceTotals = totals
-        deviceOrder = totals.filter { $0.value > 0 }.sorted { $0.value > $1.value }.map { $0.key }
+        let unattributed = InputDevice.unattributedID
+        deviceOrder = totals.filter { $0.value > 0 }
+            .sorted { a, b in
+                if a.key == unattributed { return false }
+                if b.key == unattributed { return true }
+                return a.value > b.value
+            }
+            .map { $0.key }
     }
 }
 

@@ -433,11 +433,12 @@ struct HistoryView: View {
                     Text("Breakdown").tag(2)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 230)
+                .frame(width: 220)
 
                 Toggle("By device", isOn: $splitByDevice)
                     .toggleStyle(.switch)
                     .controlSize(.small)
+                    .fixedSize()
                     .help("Split stats by physical keyboard / mouse / trackpad (this Mac only)")
             }
             .padding([.horizontal, .top])
@@ -447,8 +448,10 @@ struct HistoryView: View {
 
             if viewMode == 2 {
                 BreakdownSection(family: tab == 0 ? .keys : .mouse, byDevice: splitByDevice)
+                    .id(tab)
             } else if splitByDevice {
                 DeviceSplitSection(family: tab == 0 ? .keys : .mouse, mode: viewMode == 0 ? .daily : .timeseries)
+                    .id("\(tab)-\(viewMode)")
             } else if tab == 0 {
                 if viewMode == 0 {
                     dailyContent
