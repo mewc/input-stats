@@ -54,6 +54,38 @@ enum CredentialStore {
     private static let lock = NSLock()
     private static var cache: CredentialValues?
 
+    /// Whether the first load has happened. Until it has, reading can still cost the one-time
+    /// Keychain migration prompt, which blocks the calling thread until the user answers.
+    static var isLoaded: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cache != nil
+    }
+
+    /// Perform the first load off the main thread.
+    ///
+    /// On machines upgrading from a Keychain build the first read runs `migrateFromKeychainLocked`,
+    /// which blocks inside `SecItemCopyMatching` until SecurityAgent is answered. Doing that on the
+    /// main thread froze the whole app — the menu-bar item never appeared, so the counter looked
+    /// dead until the dialog was dismissed. Load in the background and let main-thread callers use
+    /// `cached(_:)` until it lands.
+    static func warm(completion: @escaping () -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            lock.lock()
+            _ = loadLocked()
+            lock.unlock()
+            DispatchQueue.main.async(execute: completion)
+        }
+    }
+
+    /// Non-blocking read: the value if the store is already loaded, otherwise nil. Main-thread
+    /// callers must use this rather than `get`, which can block on the migration prompt.
+    static func cached(_ account: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return cache?.value(for: account)
+    }
+
     static func get(_ account: String) -> String? {
         lock.lock()
         defer { lock.unlock() }

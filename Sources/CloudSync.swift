@@ -56,12 +56,17 @@ final class CloudSync {
     /// Fired with a freshly pulled/merged blob from the server.
     var onPulled: ((SyncData) -> Void)?
 
-    var deviceToken: String? { CredentialStore.get(tokenAccount) }
-    var signingSecret: String? { CredentialStore.get(secretAccount) }
-    var serverDeviceID: String? { CredentialStore.get(serverDeviceAccount) }
+    // Read through the loaded cache: these are consulted on every menu rebuild and sync tick,
+    // both on the main thread, where the one-time Keychain migration prompt would block the UI.
+    var deviceToken: String? { CredentialStore.cached(tokenAccount) }
+    var signingSecret: String? { CredentialStore.cached(secretAccount) }
+    var serverDeviceID: String? { CredentialStore.cached(serverDeviceAccount) }
     var isConnected: Bool { deviceToken != nil && signingSecret != nil }
+    /// False until the store has been loaded, so the menu can say "checking" rather than inviting
+    /// the user to pair a Mac that is already paired.
+    var credentialsLoaded: Bool { CredentialStore.isLoaded }
     var isConnecting: Bool {
-        (deviceToken != nil && signingSecret == nil) || CredentialStore.get(pendingVerifierAccount) != nil
+        (deviceToken != nil && signingSecret == nil) || CredentialStore.cached(pendingVerifierAccount) != nil
     }
     var accountEmail: String? { UserDefaults.standard.string(forKey: emailKey) }
 

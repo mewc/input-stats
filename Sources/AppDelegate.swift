@@ -146,10 +146,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         cloudSync.onStateChange = { [weak self] in self?.rebuildMenu() }
         cloudSync.onPulled = { [weak self] pulled in self?.handleCloudPull(pulled) }
-        if cloudSync.isConnected {
-            cloudSync.refreshDeviceIdentityIfNeeded()
-            pushToCloud()
-            cloudSync.pull()
+        // Upgrades from a Keychain build pay one migration prompt on first load, which blocks
+        // until it is answered. Load off the main thread so the menu bar comes up now, and start
+        // cloud work from the completion, once credentials are actually available.
+        CredentialStore.warm { [weak self] in
+            guard let self else { return }
+            self.rebuildMenu()
+            guard self.cloudSync.isConnected else { return }
+            self.cloudSync.refreshDeviceIdentityIfNeeded()
+            self.pushToCloud()
+            self.cloudSync.pull()
+            self.uploadCompletedMinutes()
         }
     }
 
@@ -1141,6 +1148,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 action: #selector(enterCloudConnectionCode),
                 keyEquivalent: ""
             ))
+        } else if !cloudSync.credentialsLoaded {
+            // Still loading (possibly behind the one-time migration prompt). Offering "Sign in"
+            // here would invite the user to pair a Mac that is already paired.
+            let status = NSMenuItem(title: "Checking cloud sign-in\u{2026}", action: nil, keyEquivalent: "")
+            status.isEnabled = false
+            theMenu.addItem(status)
         } else {
             if let error = cloudSync.lastError {
                 let status = NSMenuItem(title: error, action: nil, keyEquivalent: "")

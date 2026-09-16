@@ -6,6 +6,8 @@ import Foundation
 @main
 struct CredentialStoreTests {
     static func main() {
+        // Must run before anything loads the store, so the cold-cache case is real.
+        cachedReadsNeverTriggerTheMigrationPrompt()
         storeHoldsReadsAndOverwritesValues()
         removeClearsOnlyTheNamedValue()
         roundTripsThroughJson()
@@ -13,7 +15,16 @@ struct CredentialStoreTests {
         rejectsGarbage()
         preservesAwkwardValues()
         writesA0600FileAndReadsItBack()
-        print("InputStats credential-store tests: 8 passed")
+        print("InputStats credential-store tests: 9 passed")
+    }
+
+    /// `cached` is what the main thread uses. It must answer from memory alone — reaching the
+    /// store could run the one-time Keychain migration, which blocks the UI behind an
+    /// authorization prompt. That freeze is exactly what this path exists to avoid.
+    static func cachedReadsNeverTriggerTheMigrationPrompt() {
+        expect(!CredentialStore.isLoaded, "the store starts unloaded")
+        expect(CredentialStore.cached("deviceToken") == nil, "an unloaded cached read must not load")
+        expect(!CredentialStore.isLoaded, "a cached read must not mark the store loaded")
     }
 
     static func storeHoldsReadsAndOverwritesValues() {
