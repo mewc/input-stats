@@ -111,10 +111,14 @@ enum Keychain {
             found.append(account)
         }
         guard !found.isEmpty else { return (store, refused) }
-        // Only drop the originals once the consolidated item is safely written,
-        // so a failed write can never strand the user without credentials, and
-        // never while a read was refused: the rest may still hold values.
-        guard writeItem(store), !refused else { return (store, refused) }
+        // A refused read leaves some values unknown. Writing now would persist a
+        // partial set and, because the consolidated item would then exist, never
+        // retry — stranding the rest in items nothing reads. Leave everything as
+        // it is and migrate on a later launch, when the prompt can be approved.
+        guard !refused else { return (store, true) }
+        // Drop the originals only once the new item is safely written, so a
+        // failed write can never leave the user without credentials.
+        guard writeItem(store) else { return (store, false) }
         for account in found { SecItemDelete(query(for: account) as CFDictionary) }
         return (store, false)
     }
