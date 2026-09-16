@@ -143,7 +143,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func handleURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent: NSAppleEventDescriptor) {
         guard let s = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
               let url = URL(string: s) else { return }
+        if url.scheme == "inputstats", url.host == "pair" {
+            handlePairRequest()
+            return
+        }
         cloudSync.handleCallback(url: url)
+    }
+
+    /// `inputstats://pair` — the web dashboard's "Pair this Mac" button. Starts the
+    /// browser sign-in when this Mac isn't linked yet; if it already is, just push and
+    /// pull so the dashboard sees a fresh last-seen time (the web's "check sync" path).
+    private func handlePairRequest() {
+        if cloudSync.isConnected {
+            pushToCloud()
+            cloudSync.pull()
+        } else {
+            signInToCloud()
+        }
     }
 
     /// Upload this device's history (today reflects the live local count) to the cloud.
