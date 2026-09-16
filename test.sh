@@ -5,8 +5,10 @@ mkdir -p .build
 xcrun swiftc Sources/Models.swift Tests/SyncDataTests.swift -o .build/InputStatsModelTests
 .build/InputStatsModelTests
 
-xcrun swiftc Sources/CredentialStore.swift Tests/KeychainTests.swift -o .build/InputStatsKeychainTests
-.build/InputStatsKeychainTests
+# -DDEV_BUILD so the store resolves to the dev folder, never real credentials.
+xcrun swiftc -DDEV_BUILD Sources/CredentialStore.swift Sources/LegacyKeychain.swift Sources/App.swift Tests/CredentialStoreTests.swift -o .build/InputStatsCredentialStoreTests 2>/dev/null \
+    || xcrun swiftc -DDEV_BUILD Sources/CredentialStore.swift Sources/LegacyKeychain.swift Tests/CredentialStoreTests.swift Tests/Support/DevBuildFlag.swift -o .build/InputStatsCredentialStoreTests
+.build/InputStatsCredentialStoreTests
 
 xcrun swiftc Sources/EventStore.swift Sources/InputClassification.swift Tests/EventStoreTests.swift -lsqlite3 -o .build/InputStatsEventStoreTests
 .build/InputStatsEventStoreTests
