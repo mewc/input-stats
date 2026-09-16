@@ -64,6 +64,16 @@ struct MinuteAppPayload: Codable {
     let keys: Int
 }
 
+/// Coarse class of the hardware a minute's input came from. Only the category is uploaded —
+/// never a product name, vendor or serial (those stay in the local SQLite store).
+struct MinuteInputPayload: Codable {
+    let source: String
+    let keys: Int
+    let clicks: Int
+    let scrollTicks: Int
+    let pointerDistance: Int
+}
+
 struct MinuteBucketPayload: Codable {
     let startedAt: Date
     let utcOffsetMinutes: Int
@@ -72,6 +82,8 @@ struct MinuteBucketPayload: Codable {
     let scrollTicks: Int
     let pointerDistance: Int
     let apps: [MinuteAppPayload]
+    /// Omitted entirely when nothing in the minute could be attributed to a device class.
+    let inputs: [MinuteInputPayload]?
 }
 
 struct MinuteBatchPayload: Codable {

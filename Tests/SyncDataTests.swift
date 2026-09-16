@@ -163,10 +163,16 @@ struct SyncDataTests {
         let bucketKeys = Set(buckets[0].keys)
 
         expect(Set(object.keys) == Set(["schemaVersion", "clientDeviceId", "appVersion", "osVersion", "buckets"]), "minute batch gained an unknown top-level field")
-        expect(bucketKeys == Set(["startedAt", "utcOffsetMinutes", "keys", "clicks", "scrollTicks", "pointerDistance", "apps"]), "minute bucket gained a content-level field")
+        expect(bucketKeys == Set(["startedAt", "utcOffsetMinutes", "keys", "clicks", "scrollTicks", "pointerDistance", "apps", "inputs"]), "minute bucket gained a content-level field")
+
+        // Hardware identity stays local: only the coarse class may be uploaded.
+        let inputs = buckets[0]["inputs"] as! [[String: Any]]
+        expect(Set(inputs[0].keys) == Set(["source", "keys", "clicks", "scrollTicks", "pointerDistance"]), "input split gained a field")
+        expect(["builtin", "external", "virtual", "unknown"].contains(inputs[0]["source"] as! String), "input split leaked a device identity")
 
         let json = String(data: data, encoding: .utf8)!
-        for forbidden in ["text", "keyCode", "windowTitle", "url", "clipboard", "filePath"] {
+        for forbidden in ["text", "keyCode", "windowTitle", "url", "clipboard", "filePath",
+                          "vendor", "productId", "serial", "displayName"] {
             expect(!json.contains(forbidden), "minute payload contains forbidden field \(forbidden)")
         }
         expect(json.contains("com.apple.Terminal"), "private bundle ID was not encoded")
@@ -235,7 +241,9 @@ struct SyncDataTests {
                 clicks: MinuteClicksPayload(left: 4, right: 1, other: 2),
                 scrollTicks: 12,
                 pointerDistance: 1_234,
-                apps: [MinuteAppPayload(bundleId: "com.apple.Terminal", keys: 42)]
+                apps: [MinuteAppPayload(bundleId: "com.apple.Terminal", keys: 42)],
+                inputs: [MinuteInputPayload(source: "external", keys: 42, clicks: 7,
+                                            scrollTicks: 12, pointerDistance: 1_234)]
             )]
         )
     }

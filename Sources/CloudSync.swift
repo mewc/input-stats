@@ -332,6 +332,13 @@ final class CloudSync {
                     pointerDistance: bucket.pointerDistance,
                     apps: bucket.apps.map {
                         MinuteAppPayload(bundleId: $0.bundleID, keys: $0.keys)
+                    },
+                    inputs: bucket.inputs.isEmpty ? nil : bucket.inputs.map {
+                        MinuteInputPayload(source: $0.source,
+                                           keys: $0.keys,
+                                           clicks: $0.clicks,
+                                           scrollTicks: $0.scrollTicks,
+                                           pointerDistance: $0.pointerDistance)
                     }
                 )
             }
