@@ -51,6 +51,12 @@ if [ "$RELEASE_BUILD" != true ]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Input Stats (Dev)" "$BUNDLE_NAME/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleName Input Stats (Dev)" "$BUNDLE_NAME/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$BUNDLE_NAME/Contents/Info.plist"
+    # Dev registers its own URL scheme so prod/dev dashboards never open the wrong app.
+    /usr/libexec/PlistBuddy -c "Set :CFBundleURLTypes:0:CFBundleURLName com.mewc.input-stats.dev.cloud" "$BUNDLE_NAME/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleURLTypes:0:CFBundleURLSchemes:0 inputstats-dev" "$BUNDLE_NAME/Contents/Info.plist"
+    # Dev talks to a local `next dev` over plain http.
+    /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$BUNDLE_NAME/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$BUNDLE_NAME/Contents/Info.plist"
 fi
 cp AppIcon.icns "$BUNDLE_NAME/Contents/Resources/"
 

@@ -67,6 +67,13 @@ Accessibility permission is required to count input. You'll be prompted on first
 ./repair-data.sh --apply # back up the iCloud JSON, then apply the repairs
 ```
 
+The dev and release builds are kept apart on purpose: the dev app registers the
+`inputstats-dev://` URL scheme and talks to a local cloud at `http://localhost:3000`,
+while the release app registers `inputstats://` and talks to production. A "Pair this Mac"
+button on the production dashboard can therefore never open the dev app (or vice versa).
+Point either build somewhere else with
+`defaults write com.mewc.input-stats[.dev] cloudBaseURL https://…`.
+
 `repair-data.sh` scans every device in the merged history. It only changes rows matching the exact
 carried-count fingerprint, prints each proposed correction, and leaves the source untouched unless
 `--apply` is supplied. Use `--file PATH` to inspect a copied or alternate sync JSON file.
