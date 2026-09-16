@@ -13,9 +13,12 @@ final class CloudSync {
 
     // MARK: Config
 
-    /// Public URL of the deployed backend. Override at runtime for dev with:
-    /// `defaults write com.mewc.input-stats cloudBaseURL https://…`
-    static let defaultBaseURL = "https://input-stats.drummerduck.com"
+    /// Backend this build talks to. Release pairs with production only; the dev
+    /// build pairs with a local `next dev` only — never mix environments. Override
+    /// at runtime with `defaults write com.mewc.input-stats[.dev] cloudBaseURL https://…`
+    static let defaultBaseURL = isDevBuild
+        ? "http://localhost:3000"
+        : "https://input-stats.drummerduck.com"
 
     var baseURL: URL {
         if let s = UserDefaults.standard.string(forKey: "cloudBaseURL"),
@@ -114,9 +117,9 @@ final class CloudSync {
         }.resume()
     }
 
-    /// Handle the `inputstats://connected?token=…` redirect from the browser.
+    /// Handle the `<scheme>://connected?token=…` redirect from the browser.
     func handleCallback(url: URL) {
-        guard url.scheme == "inputstats",
+        guard url.scheme == appURLScheme,
               url.host == "connected",
               let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return

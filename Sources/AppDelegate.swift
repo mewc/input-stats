@@ -124,7 +124,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Cloud Sync (optional)
 
     private func setupCloudSync() {
-        // Receive the `inputstats://connected?token=…` redirect from the browser sign-in.
+        // Receive the `<scheme>://connected?token=…` redirect from the browser sign-in.
         NSAppleEventManager.shared().setEventHandler(
             self,
             andSelector: #selector(handleURLEvent(_:withReplyEvent:)),
@@ -143,14 +143,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func handleURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent: NSAppleEventDescriptor) {
         guard let s = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
               let url = URL(string: s) else { return }
-        if url.scheme == "inputstats", url.host == "pair" {
+        if url.scheme == appURLScheme, url.host == "pair" {
             handlePairRequest()
             return
         }
         cloudSync.handleCallback(url: url)
     }
 
-    /// `inputstats://pair` — the web dashboard's "Pair this Mac" button. Starts the
+    /// `<scheme>://pair` — the web dashboard's "Pair this Mac" button. Starts the
     /// browser sign-in when this Mac isn't linked yet; if it already is, just push and
     /// pull so the dashboard sees a fresh last-seen time (the web's "check sync" path).
     private func handlePairRequest() {
