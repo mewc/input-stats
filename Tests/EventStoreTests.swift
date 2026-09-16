@@ -10,7 +10,11 @@ struct EventStoreTests {
         ignoresUnknownLegacyKinds()
         preservesTimezoneOffset()
         emptyRowsStayEmpty()
-        print("InputStats event-store tests: 5 passed")
+        subsetKindsDoNotInflateCloudTotals()
+        classifiesKeyCodes()
+        countsModifierPressesNotReleases()
+        deviceKeysMergeWiredAndWirelessModes()
+        print("InputStats event-store tests: 9 passed")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -57,6 +61,74 @@ struct EventStoreTests {
 
     private static func emptyRowsStayEmpty() {
         expect(EventStore.foldMinuteRows([]) { _ in 0 }.isEmpty, "empty input created a bucket")
+    }
+
+    /// Repeats/shortcuts/composition are overlays of `.key`; folding them into the cloud payload
+    /// would double-count keystrokes.
+    private static func subsetKindsDoNotInflateCloudTotals() {
+        let buckets = EventStore.foldMinuteRows([
+            row(120, .key, "app", 10),
+            row(120, .keyRepeat, "app", 4),
+            row(120, .keyShortcut, "app", 2),
+            row(120, .keyLetter, "app", 8),
+            row(120, .modifier, "app", 3),
+            row(120, .click, "app", 5),
+            row(120, .doubleClick, "app", 1),
+            row(120, .scroll, "app", 6),
+            row(120, .scrollMomentum, "app", 2),
+            row(120, .move, "app", 100),
+            row(120, .drag, "app", 40),
+            row(120, .gesture, "app", 1),
+        ]) { _ in 0 }
+        let b = buckets[0]
+        expect(b.keys == 10 && b.clicksLeft == 5 && b.scrollTicks == 6 && b.pointerDistance == 100,
+               "subset kinds leaked into cloud totals")
+    }
+
+    private static func classifiesKeyCodes() {
+        expect(KeyClass.classify(keyCode: 0) == .letter, "kVK_ANSI_A is a letter")
+        expect(KeyClass.classify(keyCode: 46) == .letter, "kVK_ANSI_M is a letter")
+        expect(KeyClass.classify(keyCode: 18) == .digit, "kVK_ANSI_1 is a digit")
+        expect(KeyClass.classify(keyCode: 82) == .digit, "keypad 0 is a digit")
+        expect(KeyClass.classify(keyCode: 49) == .space, "space")
+        expect(KeyClass.classify(keyCode: 36) == .enter && KeyClass.classify(keyCode: 76) == .enter, "return / keypad enter")
+        expect(KeyClass.classify(keyCode: 51) == .backspace && KeyClass.classify(keyCode: 117) == .backspace, "delete keys")
+        expect(KeyClass.classify(keyCode: 123) == .navigation && KeyClass.classify(keyCode: 48) == .navigation, "arrows / tab")
+        expect(KeyClass.classify(keyCode: 53) == .other && KeyClass.classify(keyCode: 122) == .other, "esc / F1 are other")
+        expect(KeyClass.classify(keyCode: 43) == .other, "comma is other")
+        expect(Set(KeyClass.allCases.map(\.kind)) == Set(EventKind.keyCompositionKinds), "composition kinds drifted")
+    }
+
+    private static func countsModifierPressesNotReleases() {
+        var d = ModifierPressDetector()
+        let shift: UInt64 = 0x0002_0000, cmd: UInt64 = 0x0010_0000, capsLock: UInt64 = 0x0001_0000
+        expect(d.pressesOnUpdate(flags: shift) == 1, "shift press")
+        expect(d.pressesOnUpdate(flags: shift | cmd) == 1, "cmd added while shift held")
+        expect(d.pressesOnUpdate(flags: cmd) == 0, "shift release is not a press")
+        expect(d.pressesOnUpdate(flags: 0) == 0, "cmd release is not a press")
+        expect(d.pressesOnUpdate(flags: capsLock) == 0, "caps lock is ignored")
+        expect(d.pressesOnUpdate(flags: capsLock | shift | cmd) == 2, "two modifiers at once")
+    }
+
+    private static func deviceKeysMergeWiredAndWirelessModes() {
+        let wired = InputDeviceDescriptor(role: .pointer, name: "Razer DeathAdder V2 Pro", vendorID: 5426,
+                                          productID: 125, transport: "USB", isBuiltIn: false, isSoftware: false)
+        let dongle = InputDeviceDescriptor(role: .pointer, name: "Razer DeathAdder V2 Pro ", vendorID: 5426,
+                                           productID: 124, transport: "USB", isBuiltIn: false, isSoftware: false)
+        expect(wired.key == dongle.key, "same mouse on a different PID should be one device")
+        let builtinKB = InputDeviceDescriptor(role: .keyboard, name: "Apple Internal Keyboard / Trackpad", vendorID: 0,
+                                              productID: 0, transport: "FIFO", isBuiltIn: true, isSoftware: false)
+        let builtinTP = InputDeviceDescriptor(role: .pointer, name: "Apple Internal Keyboard / Trackpad", vendorID: 0,
+                                              productID: 0, transport: "FIFO", isBuiltIn: true, isSoftware: false)
+        expect(builtinKB.key != builtinTP.key, "built-in keyboard and trackpad share a product string but differ by role")
+        let kb = InputDevice(id: 1, key: builtinKB.key, role: .keyboard, name: builtinKB.name, vendorID: 0, productID: 0,
+                             transport: "FIFO", isBuiltIn: true, isSoftware: false)
+        let tp = InputDevice(id: 2, key: builtinTP.key, role: .pointer, name: builtinTP.name, vendorID: 0, productID: 0,
+                             transport: "FIFO", isBuiltIn: true, isSoftware: false)
+        expect(kb.displayName == "Built-in Keyboard" && tp.displayName == "Built-in Trackpad", "built-in display names")
+        expect(InputDevice.unattributed.displayName == "Unattributed", "legacy rows label")
+        expect(InputDeviceDescriptor.software(role: .keyboard).key != InputDeviceDescriptor.software(role: .pointer).key,
+               "software devices are per role")
     }
 
     private static func row(_ minute: Int, _ kind: EventKind, _ app: String, _ value: Int) -> EventStore.MinuteRow {

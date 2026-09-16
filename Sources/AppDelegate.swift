@@ -35,6 +35,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var bucketFlushTimer: Timer?
     // Cached frontmost app bundle ID, refreshed on app-activation (avoids per-event lookups).
     private var currentAppBundleID: String = "unknown"
+    // Physical-device attribution (built-in keyboard/trackpad vs external mouse/keyboard).
+    private let deviceResolver = InputDeviceResolver.shared
+    private var modifierDetector = ModifierPressDetector()
 
     // Per-day local totals for clicks and pointer movement (px), keyed by "yyyy-MM-dd".
     // Refreshed async from EventStore when the menu opens; powers the menu's Clicks/Distance sections.
@@ -1354,7 +1357,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @discardableResult
     private func startMonitoring() -> Bool {
         let trackedTypes: [CGEventType] = [
-            .keyDown,
+            .keyDown, .flagsChanged,
             .leftMouseDown, .rightMouseDown, .otherMouseDown,
             .scrollWheel,
             .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
@@ -1362,6 +1365,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var eventMask: CGEventMask = 0
         for type in trackedTypes {
             eventMask |= CGEventMask(1) << CGEventMask(type.rawValue)
+        }
+        // Trackpad gestures (rotate/magnify/swipe/smart-zoom) have no CGEventType case but flow
+        // through the tap under their NSEvent.EventType raw values.
+        for raw in GestureEventType.allCases {
+            eventMask |= CGEventMask(1) << CGEventMask(raw.rawValue)
         }
 
         guard let tap = CGEvent.tapCreate(
@@ -1423,11 +1431,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         currentBucket = b
     }
 
-    /// Add `amount` of `kind` (count, or pixels for `.move`) to the current bucket for the frontmost app.
-    private func accumulate(_ kind: EventKind, amount: Int) {
+    /// Add `amount` of `kind` (count, or pixels for `.move`) to the current bucket for the frontmost
+    /// app, attributed to `device` (a `devices` row id).
+    private func accumulate(_ kind: EventKind, amount: Int, device: Int) {
         guard amount != 0 else { return }
         rolloverBucketIfNeeded()
-        let key = EventStore.BucketKey(kind: kind.rawValue, app: currentAppBundleID)
+        let key = EventStore.BucketKey(kind: kind.rawValue, app: currentAppBundleID, device: device)
         bucketAccum[key, default: 0] += amount
     }
 
@@ -1435,36 +1444,68 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func handleTapEvent(type: CGEventType, event: CGEvent) {
         switch type {
         case .keyDown:
-            handleKeyEvent()
+            handleKeyEvent(event)
+        case .flagsChanged:
+            let presses = modifierDetector.pressesOnUpdate(flags: event.flags.rawValue)
+            if presses > 0 {
+                accumulate(.modifier, amount: presses, device: deviceResolver.deviceID(for: event, role: .keyboard))
+            }
         case .leftMouseDown:
-            accumulate(.click, amount: 1)
+            let device = deviceResolver.deviceID(for: event, role: .pointer)
+            accumulate(.click, amount: 1, device: device)
+            if event.getIntegerValueField(.mouseEventClickState) == 2 {
+                accumulate(.doubleClick, amount: 1, device: device)
+            }
         case .rightMouseDown:
-            accumulate(.rightClick, amount: 1)
+            accumulate(.rightClick, amount: 1, device: deviceResolver.deviceID(for: event, role: .pointer))
         case .otherMouseDown:
-            accumulate(.otherClick, amount: 1)
+            accumulate(.otherClick, amount: 1, device: deviceResolver.deviceID(for: event, role: .pointer))
         case .scrollWheel:
-            accumulate(.scroll, amount: 1)
+            let device = deviceResolver.deviceID(for: event, role: .pointer)
+            accumulate(.scroll, amount: 1, device: device)
+            if event.getIntegerValueField(.scrollWheelEventMomentumPhase) != 0 {
+                accumulate(.scrollMomentum, amount: 1, device: device)
+            }
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
             let dx = event.getDoubleValueField(.mouseEventDeltaX)
             let dy = event.getDoubleValueField(.mouseEventDeltaY)
             let dist = Int((dx * dx + dy * dy).squareRoot().rounded())
-            accumulate(.move, amount: dist)
+            let device = deviceResolver.deviceID(for: event, role: .pointer)
+            accumulate(.move, amount: dist, device: device)
+            if type != .mouseMoved {
+                accumulate(.drag, amount: dist, device: device)
+            }
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
         default:
-            break
+            if let gesture = GestureEventType(rawValue: type.rawValue), gesture.countsAsGesture(event) {
+                accumulate(.gesture, amount: 1, device: deviceResolver.deviceID(for: event, role: .pointer))
+            }
         }
     }
 
-    func handleKeyEvent() {
+    func handleKeyEvent(_ event: CGEvent) {
         checkDayChange()
 
         // Track which app received this keystroke
         let bundleID = currentAppBundleID
         localAppCounts[bundleID, default: 0] += 1
 
-        // High-res timeseries (local-only)
-        accumulate(.key, amount: 1)
+        // High-res timeseries (local-only). `.key` is the headline count; the rest are overlays:
+        // what was pressed (composition) and how (repeat / shortcut / software-injected).
+        let device = deviceResolver.deviceID(for: event, role: .keyboard)
+        accumulate(.key, amount: 1, device: device)
+        let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
+        accumulate(KeyClass.classify(keyCode: keyCode).kind, amount: 1, device: device)
+        if event.getIntegerValueField(.keyboardEventAutorepeat) != 0 {
+            accumulate(.keyRepeat, amount: 1, device: device)
+        }
+        if InputDeviceResolver.isSynthetic(event) {
+            accumulate(.keySynthetic, amount: 1, device: device)
+        }
+        if !event.flags.intersection([.maskCommand, .maskControl, .maskAlternate]).isEmpty {
+            accumulate(.keyShortcut, amount: 1, device: device)
+        }
 
         localKeystrokeCount += 1
         totalKeystrokeCount += 1

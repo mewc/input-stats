@@ -277,7 +277,9 @@ struct ChartTooltip: View {
 struct HistoryView: View {
     @ObservedObject var dataStore: HistoryDataStore
     @State private var tab = 0       // 0 = Keys, 1 = Mouse
-    @State private var viewMode = 0  // 0 = Daily, 1 = Timeseries
+    @State private var viewMode = 0  // 0 = Daily, 1 = Timeseries, 2 = Breakdown
+    // Everything rolls up to Keys / Mouse by default; this splits charts by physical device.
+    @AppStorage("historySplitByDevice") private var splitByDevice = false
     @State private var selectedDays = 7
     @State private var hiddenApps: Set<String> = []  // bundleIDs to hide from stats
     @State private var expandedDays: Set<String> = []  // dateStrings of expanded rows
@@ -421,23 +423,36 @@ struct HistoryView: View {
                     Text("Mouse").tag(1)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 150)
+                .frame(width: 130)
 
                 Spacer()
 
                 Picker("", selection: $viewMode) {
                     Text("Daily").tag(0)
                     Text("Timeseries").tag(1)
+                    Text("Breakdown").tag(2)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 190)
+                .frame(width: 220)
+
+                Toggle("By device", isOn: $splitByDevice)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .fixedSize()
+                    .help("Split stats by physical keyboard / mouse / trackpad (this Mac only)")
             }
             .padding([.horizontal, .top])
             .padding(.bottom, 10)
 
             Divider()
 
-            if tab == 0 {
+            if viewMode == 2 {
+                BreakdownSection(family: tab == 0 ? .keys : .mouse, byDevice: splitByDevice)
+                    .id(tab)
+            } else if splitByDevice {
+                DeviceSplitSection(family: tab == 0 ? .keys : .mouse, mode: viewMode == 0 ? .daily : .timeseries)
+                    .id("\(tab)-\(viewMode)")
+            } else if tab == 0 {
                 if viewMode == 0 {
                     dailyContent
                 } else {
@@ -556,6 +571,7 @@ struct LegendItem: View {
     let color: Color
     let count: Int
     let isHidden: Bool
+    var unit: String = "keystrokes"
     let onToggle: () -> Void
 
     var body: some View {
@@ -575,7 +591,7 @@ struct LegendItem: View {
             }
         }
         .buttonStyle(.plain)
-        .help("\(displayName): \(formatCount(count)) keystrokes")
+        .help("\(displayName): \(formatCount(count)) \(unit)")
     }
 
     private func formatCount(_ count: Int) -> String {
@@ -700,12 +716,18 @@ class HistoryWindowController: NSWindowController, NSWindowDelegate {
 extension EventKind {
     var color: Color {
         switch self {
-        case .key: return .blue
-        case .click: return .green
-        case .rightClick: return .green
-        case .otherClick: return .green
-        case .scroll: return .orange
-        case .move: return .pink
+        case .key, .keyRepeat, .keySynthetic, .keyShortcut, .modifier: return .blue
+        case .click, .rightClick, .otherClick, .doubleClick: return .green
+        case .scroll, .scrollMomentum: return .orange
+        case .move, .drag: return .pink
+        case .gesture: return .purple
+        case .keyLetter: return .blue
+        case .keyDigit: return .cyan
+        case .keySpace: return .mint
+        case .keyEnter: return .green
+        case .keyBackspace: return .red
+        case .keyNavigation: return .orange
+        case .keyOther: return .gray
         }
     }
 }

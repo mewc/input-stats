@@ -28,7 +28,7 @@ fi
 BUNDLE="Input Stats (Dev).app"
 # Both dev and release share the executable name "InputStats", so target the dev
 # instance by its bundle path rather than process name (killall would hit both).
-pkill -f "Input Stats (Dev).app" 2>/dev/null || true
+pkill -f "Input Stats \\(Dev\\).app" 2>/dev/null || true
 
 if [ "$RUN_FOREGROUND" = true ]; then
     echo ""
