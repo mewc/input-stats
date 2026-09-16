@@ -256,8 +256,12 @@ final class EventStore {
 
     /// Base resolution. Every higher resolution must be a multiple of this.
     static let baseBucketSeconds = 5
-    /// How long we keep raw 5s data before pruning.
+    /// How long we keep any data before pruning.
     private let retentionDays = 30
+    /// How long 5-second resolution is kept. Older rows are folded into one-minute buckets: the
+    /// drilldown only offers 5s blocks for spans of an hour or less, which are always recent, so
+    /// the detail is unreachable but the rows still cost storage. Every total is preserved.
+    private let fineResolutionDays = 7
 
     private var db: OpaquePointer?
     private let queue = DispatchQueue(label: "com.input-stats.eventstore", qos: .utility)
@@ -351,6 +355,7 @@ final class EventStore {
             open()
             migrate()
             pruneLocked()
+            compactLocked()
         }
     }
 
@@ -791,6 +796,35 @@ final class EventStore {
     }
 
     // MARK: Pruning
+
+    /// Fold sub-minute rows older than `fineResolutionDays` into their minute bucket.
+    /// Sums are preserved exactly, so daily totals, minute exports and the cloud's
+    /// already-uploaded minutes all stay identical.
+    private func compactLocked() {
+        guard let db else { return }
+        let cutoff = EventStore.bucket(for: Date().addingTimeInterval(-Double(fineResolutionDays) * 86400))
+        exec("BEGIN;")
+        exec("""
+            INSERT INTO events(bucket, kind, app, device, display, count)
+            SELECT (bucket / 60) * 60, kind, app, device, display, SUM(count)
+            FROM events
+            WHERE bucket < \(cutoff) AND bucket % 60 != 0
+            GROUP BY 1, 2, 3, 4, 5
+            ON CONFLICT(bucket, kind, app, device, display)
+            DO UPDATE SET count = count + excluded.count;
+            """)
+        exec("DELETE FROM events WHERE bucket < \(cutoff) AND bucket % 60 != 0;")
+        let removed = sqlite3_changes(db)
+        exec("COMMIT;")
+        // Reclaim the freed pages rather than leaving a file that only ever grew. Cheap and rare:
+        // the first run reclaims weeks of 5s rows, later ones a single day's worth.
+        if removed > 0 { exec("VACUUM;") }
+    }
+
+    /// Fold old sub-minute rows into minutes. Safe to call repeatedly; a no-op once compacted.
+    func compact() {
+        queue.async { [weak self] in self?.compactLocked() }
+    }
 
     private func pruneLocked() {
         let cutoff = EventStore.bucket(for: Date().addingTimeInterval(-Double(retentionDays) * 86400))
