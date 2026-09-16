@@ -83,11 +83,10 @@ enum Keychain {
         return migrated
     }
 
-    /// A self-signed binary cannot be pinned by designated requirement, so the
-    /// ACL tracks the exact build that wrote the item and every app update costs
-    /// one authorization prompt. Rewriting the item after a successful read
-    /// re-anchors the ACL to the new build, so the prompt happens once per
-    /// update instead of once per launch.
+    /// Rewrites the item once per build. Installs created before the
+    /// prompt-free access policy still carry a binary-pinned ACL, so the first
+    /// read on a new build costs one prompt; rewriting then replaces that ACL
+    /// with the app-agnostic one and no further prompt appears.
     private static func rewriteAfterUpgradeLocked(_ store: CredentialStore) {
         guard !store.isEmpty else { return }
         let defaults = UserDefaults.standard
@@ -130,6 +129,29 @@ enum Keychain {
         return true
     }
 
+    /// Access policy attached to the item.
+    ///
+    /// Without one, macOS pins the ACL to the exact binary that created the
+    /// item. The app is signed with a self-signed certificate that chains to no
+    /// trusted root, so that pin cannot survive a rebuild and every update
+    /// costs the user an authorization prompt. Creating the access with a null
+    /// trusted-application list means "any application", which removes the
+    /// prompt for good.
+    ///
+    /// The trade is deliberate: any process running as this user can now read
+    /// the item without a dialog, the same exposure as a file in the user's
+    /// home directory. It still sits encrypted at rest in the login keychain,
+    /// and the value is a device token that can only upload this Mac's counts.
+    ///
+    /// `SecAccessCreate` is deprecated alongside SecKeychain but remains the
+    /// only way to express this for a file-based keychain item; the data
+    /// protection keychain would need a Team ID this app does not have.
+    private static func itemAccess() -> SecAccess? {
+        var access: SecAccess?
+        guard SecAccessCreate("Input Stats" as CFString, nil, &access) == errSecSuccess else { return nil }
+        return access
+    }
+
     private static func writeItem(_ store: CredentialStore) -> Bool {
         guard let data = store.encoded() else { return false }
         // Delete first so the ACL is regenerated for the binary doing the write.
@@ -138,7 +160,14 @@ enum Keychain {
         SecItemDelete(query(for: storeAccount) as CFDictionary)
         var attrs = query(for: storeAccount)
         attrs[kSecValueData as String] = data
-        attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        if let access = itemAccess() {
+            // kSecAttrAccess and kSecAttrAccessible are mutually exclusive: the
+            // former is the file-based keychain's ACL, the latter belongs to the
+            // data protection keychain.
+            attrs[kSecAttrAccess as String] = access
+        } else {
+            attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        }
         return SecItemAdd(attrs as CFDictionary, nil) == errSecSuccess
     }
 
