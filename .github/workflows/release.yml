@@ -112,4 +112,14 @@ jobs:
           git config user.email "mikecarter771@gmail.com"
           git add appcast.xml
           git commit -m "chore(release): appcast for v${VERSION}"
-          git push origin HEAD:main
+          # Another release (or any merge) can land on main between this build starting and
+          # finishing. Rebase and retry rather than failing the release with the zip already
+          # published and the feed left pointing at the previous version.
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then exit 0; fi
+            echo "push rejected (attempt $attempt) — rebasing onto main"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; exit 1; }
+            sleep $((attempt * 5))
+          done
+          echo "::error::could not publish appcast after 3 attempts" && exit 1
