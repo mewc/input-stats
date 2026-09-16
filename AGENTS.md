@@ -64,3 +64,8 @@
 - **Never renumber an `EventKind` raw value** — they are persisted in user databases, and a renumber orphans that history. `Tests/EventStoreTests.swift` guards the shipped values.
 - Karabiner-Elements users: all keys arrive from its virtual HID keyboard, so they attribute to "Karabiner DriverKit VirtualHIDKeyboard" rather than the physical board.
 
+## Opt-in key heatmap, layouts, and the cloud device class
+- **Key heatmap is opt-in and local-only.** `key_presses(day, keycode)` is written only while `keyHeatmapEnabled` is set; turning the toggle off deletes the collected rows. It is never uploaded. Labels come from the active layout via `UCKeyTranslate`, so non-US layouts read correctly.
+- `layout_usage(day, input source)` tracks which keyboard layout keystrokes were typed in. Both tables prune on the same 30-day schedule as `events`.
+- The minute upload carries an optional `inputs` split by **coarse device class only** (`builtin` / `external` / `virtual` / `unknown`), resolved by joining the local `devices` table inside the export query. Product names, vendor ids and serials never leave the Mac. The cloud sanitizer **fails closed on unknown fields**, so any new payload field must ship on the server (input-stats-cloud) *before* the app starts sending it.
+- **Never read credentials on the main thread at launch.** `CredentialStore.warm()` loads in the background and `cached(_:)` is the main-thread accessor; a blocking read froze the whole app (no menu-bar item) behind the one-time Keychain migration prompt.
