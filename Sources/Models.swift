@@ -6,6 +6,51 @@ enum CloudSyncMigration {
     }
 }
 
+// MARK: - Browser handoff links
+
+/// What an inbound `<scheme>://…` link from the browser asks this build to do.
+///
+/// Kept pure (no Keychain, no network) so the routing is testable. Anything we
+/// can't act on becomes `.rejected` with a message for the menu rather than a
+/// silent drop: a handoff that disappears without a trace is indistinguishable
+/// from a dead "Open Input Stats" button, which is exactly how a stale dev
+/// bundle claiming the release `inputstats://` scheme presented.
+enum CloudHandoffLink: Equatable {
+    /// `<scheme>://pair` — the dashboard's "Pair this Mac" button.
+    case pair
+    /// `<scheme>://connected?code=…` — the PKCE handoff.
+    case connect(code: String)
+    /// `<scheme>://connected?token=…` — the original flow, still honoured.
+    case legacyToken(String)
+    /// Not actionable; the payload is the reason to show the user.
+    case rejected(String)
+
+    static func classify(_ url: URL, expectedScheme: String) -> CloudHandoffLink {
+        guard let scheme = url.scheme,
+              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return .rejected("Sign-in link could not be read.")
+        }
+        guard scheme.caseInsensitiveCompare(expectedScheme) == .orderedSame else {
+            // The other build (or a stale bundle) owns this scheme in LaunchServices.
+            return .rejected("Sign-in link was for another Input Stats build (\(scheme)://).")
+        }
+        switch url.host {
+        case "pair":
+            return .pair
+        case "connected":
+            if let code = comps.queryItems?.first(where: { $0.name == "code" })?.value, !code.isEmpty {
+                return .connect(code: code)
+            }
+            if let token = comps.queryItems?.first(where: { $0.name == "token" })?.value, !token.isEmpty {
+                return .legacyToken(token)
+            }
+            return .rejected("Sign-in link carried no connection code.")
+        default:
+            return .rejected("Unrecognised sign-in link (\(expectedScheme)://\(url.host ?? "")).")
+        }
+    }
+}
+
 // MARK: - Privacy-safe cloud minute payload
 
 struct MinuteClicksPayload: Codable {
