@@ -51,6 +51,10 @@ jobs:
           body: |
             ## Install
 
+            **Homebrew:** `brew install --cask mewc/tap/input-stats`
+
+            **Or by hand:**
+
             1. Download `InputStats.zip` below and unzip it.
             2. Move **Input Stats.app** to `/Applications`.
             3. Because this is self-signed (not notarized), first launch is blocked by Gatekeeper.
