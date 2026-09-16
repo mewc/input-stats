@@ -76,12 +76,21 @@ fi
 
 # Code sign the app bundle
 echo "Code signing app bundle..."
-SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
-if [ "$SIGNING_IDENTITY" = "-" ]; then
-    echo "Using ad-hoc signing (set SIGNING_IDENTITY for Developer ID signing)"
+if [ "$RELEASE_BUILD" = true ]; then
+    export SELF_SIGNED_FALLBACK="InputStats-Release"
 else
-    echo "Using signing identity: $SIGNING_IDENTITY"
+    export SELF_SIGNED_FALLBACK="InputStats-Dev"
 fi
+SIGNING_IDENTITY=$(./scripts/signing-identity.sh)
+case "$SIGNING_IDENTITY" in
+    "-")
+        echo "Using ad-hoc signing (set SIGNING_IDENTITY for Developer ID signing)" ;;
+    "Developer ID Application:"*|"Apple Development:"*)
+        echo "Using signing identity: $SIGNING_IDENTITY" ;;
+    *)
+        echo "Using signing identity: $SIGNING_IDENTITY (self-signed: no Team ID, so Keychain"
+        echo "  items stay cdhash-pinned and re-prompt each build — see scripts/keychain-partitions.sh)" ;;
+esac
 
 # Re-sign Sparkle framework first to match our signing identity
 if [ -d "$BUNDLE_NAME/Contents/Frameworks/Sparkle.framework" ]; then

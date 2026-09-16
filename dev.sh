@@ -9,17 +9,16 @@ set -e
 RUN_FOREGROUND=false
 [ "$1" = "--run" ] && RUN_FOREGROUND=true
 
-# Use a stable self-signed identity if present so the Accessibility grant survives rebuilds.
-# Create it once: Keychain Access > Certificate Assistant > Create a Certificate,
-# name "InputStats-Dev", Identity Type "Self Signed Root", Certificate Type "Code Signing".
-DEV_IDENTITY="InputStats-Dev"
-# No -v: the cert is self-signed (not trust-anchored), so -v hides it, but codesign can still
-# sign with it — and a stable signature is all we need for the Accessibility grant to persist.
-if security find-identity -p codesigning 2>/dev/null | grep -q "$DEV_IDENTITY"; then
-    export SIGNING_IDENTITY="$DEV_IDENTITY"
-    echo "Signing with stable identity: $DEV_IDENTITY (Accessibility grant persists across rebuilds)"
-else
-    echo "No '$DEV_IDENTITY' cert found — using ad-hoc signing."
+# build.sh resolves the identity (scripts/signing-identity.sh): an Apple-issued
+# certificate first, then the stable self-signed "InputStats-Dev". Either keeps the
+# Accessibility grant across rebuilds; only the Apple-issued one has a Team ID, which
+# is what stops the Keychain re-prompting on every build.
+# Create the self-signed fallback once: Keychain Access > Certificate Assistant >
+# Create a Certificate, name "InputStats-Dev", Identity Type "Self Signed Root",
+# Certificate Type "Code Signing".
+export SELF_SIGNED_FALLBACK="InputStats-Dev"
+if [ "$(./scripts/signing-identity.sh)" = "-" ]; then
+    echo "No signing certificate found — using ad-hoc signing."
     echo "  (You'll have to re-grant Accessibility after rebuilds. Create the cert once to stop this.)"
 fi
 
