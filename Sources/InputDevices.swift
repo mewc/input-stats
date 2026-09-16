@@ -24,7 +24,10 @@ final class InputDeviceResolver {
         let sender: UInt64
         let role: InputDevice.Role
     }
+    // Touched only from the main thread: the event tap callback runs on the main run loop, and
+    // every resolver completion hops back to main before mutating these.
     private var cache: [CacheKey: Int] = [:]
+    private var pending: Set<CacheKey> = []
     private var softwareIDs: [InputDevice.Role: Int] = [:]
 
     /// False when the private symbols are missing; every event then lands on the unattributed device.
@@ -49,8 +52,10 @@ final class InputDeviceResolver {
         event.getIntegerValueField(.eventSourceUnixProcessID) != 0
     }
 
-    /// The `devices` row id for the device behind `event`. Cheap on the hot path: one private
-    /// call pair plus a dictionary hit; only a never-seen sender touches IORegistry and SQLite.
+    /// The `devices` row id for the device behind `event`. Never blocks: a cache hit is a
+    /// dictionary lookup, and a never-seen sender is resolved in the background (IORegistry plus
+    /// a SQLite write) while this event — and any others arriving in that window — attribute to
+    /// the unknown device. Input must never wait on the database.
     func deviceID(for event: CGEvent, role: InputDevice.Role) -> Int {
         if Self.isSynthetic(event) { return softwareDevice(role: role) }
         guard let copyIOHIDEvent, let senderID,
@@ -62,17 +67,31 @@ final class InputDeviceResolver {
 
         let key = CacheKey(sender: sender, role: role)
         if let cached = cache[key] { return cached }
-        let descriptor = Self.describe(sender: sender, role: role)
-        let id = EventStore.shared.deviceID(for: descriptor)
-        cache[key] = id
-        return id
+        resolve(key)
+        return InputDevice.unattributedID
+    }
+
+    /// Resolve a sender once, off the main thread, and cache the result.
+    private func resolve(_ key: CacheKey) {
+        guard !pending.contains(key) else { return }
+        pending.insert(key)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let descriptor = Self.describe(sender: key.sender, role: key.role)
+            let id = EventStore.shared.deviceID(for: descriptor)
+            DispatchQueue.main.async {
+                self.cache[key] = id
+                self.pending.remove(key)
+            }
+        }
     }
 
     private func softwareDevice(role: InputDevice.Role) -> Int {
         if let id = softwareIDs[role] { return id }
-        let id = EventStore.shared.deviceID(for: .software(role: role))
-        softwareIDs[role] = id
-        return id
+        DispatchQueue.global(qos: .utility).async {
+            let id = EventStore.shared.deviceID(for: .software(role: role))
+            DispatchQueue.main.async { self.softwareIDs[role] = id }
+        }
+        return InputDevice.unattributedID
     }
 
     /// Resolve a HID sender (IORegistry entry ID) to device properties. The sender is usually an
@@ -180,10 +199,18 @@ final class DisplayResolver {
     }
 
     /// Re-read the screen list and ensure each has a `displays` row.
+    ///
+    /// `NSScreen` must be read on the main thread, but resolving each screen's row id touches
+    /// SQLite — which at launch means waiting behind the schema migration. Read the screens here
+    /// and do the lookups in the background, so nothing on the main thread waits on the database.
+    /// Until the ids land, pointer events attribute to the unknown screen rather than blocking.
     func refresh() {
-        entries = NSScreen.screens.map { screen in
-            Entry(frame: Self.eventFrame(of: screen),
-                  id: EventStore.shared.displayID(for: Self.describe(screen)))
+        let described = NSScreen.screens.map { (frame: Self.eventFrame(of: $0), descriptor: Self.describe($0)) }
+        DispatchQueue.global(qos: .utility).async {
+            let resolved = described.map {
+                Entry(frame: $0.frame, id: EventStore.shared.displayID(for: $0.descriptor))
+            }
+            DispatchQueue.main.async { self.entries = resolved }
         }
     }
 

@@ -343,7 +343,11 @@ final class EventStore {
     }
 
     private init() {
-        queue.sync {
+        // Opening, migrating and pruning happen on the store's serial queue, and every other
+        // operation is queued behind them. Doing it synchronously here would run a schema
+        // migration on whichever thread first touched the store — the main thread, during
+        // launch — and hold up the menu bar for as long as the rewrite takes.
+        queue.async { [self] in
             open()
             migrate()
             pruneLocked()
@@ -764,10 +768,15 @@ final class EventStore {
     }
 
     /// Local "yyyy-MM-dd", matching the day keys used by the sync data and the daily queries.
-    static func dayString(for date: Date) -> String {
+    /// Called on every bucket rollover, so the formatter is built once rather than per call.
+    private static let dayFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
-        return f.string(from: date)
+        return f
+    }()
+
+    static func dayString(for date: Date) -> String {
+        dayFormatter.string(from: date)
     }
 
     func prune() {
