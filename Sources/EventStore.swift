@@ -161,6 +161,22 @@ struct InputDevice: Identifiable, Hashable {
                                           isSoftware: false)
 }
 
+/// The coarse hardware classes the cloud accepts. Deliberately the only device information that
+/// ever leaves the Mac — product names, vendor ids and serials stay in the local store.
+enum InputSourceClass {
+    static let builtin = "builtin"
+    static let external = "external"
+    static let virtual = "virtual"
+    static let unknown = "unknown"
+
+    /// Classify a `devices` row from its stored flags.
+    static func classify(isSoftware: Bool, isBuiltIn: Bool, isAttributed: Bool) -> String {
+        if !isAttributed { return unknown }
+        if isSoftware { return virtual }
+        return isBuiltIn ? builtin : external
+    }
+}
+
 /// What the resolver learns about a device from IORegistry. `key` is the stable identity used to
 /// de-duplicate across reconnects/reboots (registry IDs are not stable): role + vendor + name + built-in.
 /// Product ID is deliberately excluded so a mouse that switches between wired/dongle PIDs stays one row.
@@ -219,6 +235,14 @@ struct DisplayDescriptor {
     let isBuiltIn: Bool
 }
 
+/// A keyboard input source (layout / language), identified by its TIS input-source id.
+struct LayoutKey: Hashable {
+    let id: String
+    let name: String
+
+    var displayName: String { name.isEmpty ? id : name }
+}
+
 // SQLite wants this destructor for transient (Swift-owned) strings bound to statements.
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
@@ -273,6 +297,15 @@ final class EventStore {
         let keys: Int
     }
 
+    /// One input-device class's share of a minute. `source` is the wire value the cloud accepts.
+    struct MinuteInputCount {
+        let source: String
+        let keys: Int
+        let clicks: Int
+        let scrollTicks: Int
+        let pointerDistance: Int
+    }
+
     struct MinuteBucket {
         let startedAt: Date
         let utcOffsetMinutes: Int
@@ -283,6 +316,7 @@ final class EventStore {
         let scrollTicks: Int
         let pointerDistance: Int
         let apps: [MinuteAppCount]
+        let inputs: [MinuteInputCount]
     }
 
     struct MinuteExport {
@@ -295,6 +329,17 @@ final class EventStore {
         let kind: Int
         let app: String
         let value: Int
+        /// Coarse class of the device that produced these events ("builtin", "external",
+        /// "virtual", "unknown"), resolved by joining the local devices table.
+        let source: String
+
+        init(minute: Int, kind: Int, app: String, value: Int, source: String = InputSourceClass.unknown) {
+            self.minute = minute
+            self.kind = kind
+            self.app = app
+            self.value = value
+            self.source = source
+        }
     }
 
     private init() {
@@ -358,6 +403,28 @@ final class EventStore {
                 builtin    INTEGER NOT NULL DEFAULT 0,
                 first_seen INTEGER NOT NULL,
                 last_seen  INTEGER NOT NULL
+            );
+            """)
+
+        // Opt-in key heatmap. Aggregate counts per key code per local day — never sequences,
+        // never characters, never synced. Rows only exist while the user has the toggle on.
+        exec("""
+            CREATE TABLE IF NOT EXISTS key_presses (
+                day     TEXT NOT NULL,
+                keycode INTEGER NOT NULL,
+                count   INTEGER NOT NULL,
+                PRIMARY KEY (day, keycode)
+            );
+            """)
+
+        // Which keyboard layout / input source the day's keystrokes were typed in.
+        exec("""
+            CREATE TABLE IF NOT EXISTS layout_usage (
+                day    TEXT NOT NULL,
+                layout TEXT NOT NULL,
+                name   TEXT NOT NULL,
+                count  INTEGER NOT NULL,
+                PRIMARY KEY (day, layout)
             );
             """)
 
@@ -508,12 +575,22 @@ final class EventStore {
         guard let db, endBucket > startBucket else {
             return MinuteExport(buckets: [], scannedThrough: endBucket)
         }
+        // Devices are joined here (not stored per event) so only the coarse class reaches the
+        // payload; id 0 means "recorded before device attribution existed".
         let sql = """
-            SELECT (bucket / 60) * 60 AS minute, kind, app, SUM(count)
-            FROM events
-            WHERE bucket >= ? AND bucket < ?
-            GROUP BY minute, kind, app
-            ORDER BY minute, kind, app;
+            SELECT (e.bucket / 60) * 60 AS minute, e.kind, e.app, SUM(e.count),
+                   CASE
+                     WHEN e.device = 0 THEN '\(InputSourceClass.unknown)'
+                     WHEN d.software = 1 THEN '\(InputSourceClass.virtual)'
+                     WHEN d.builtin = 1 THEN '\(InputSourceClass.builtin)'
+                     WHEN d.id IS NULL THEN '\(InputSourceClass.unknown)'
+                     ELSE '\(InputSourceClass.external)'
+                   END AS source
+            FROM events e
+            LEFT JOIN devices d ON d.id = e.device
+            WHERE e.bucket >= ? AND e.bucket < ?
+            GROUP BY minute, e.kind, e.app, source
+            ORDER BY minute, e.kind, e.app;
             """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
@@ -529,7 +606,8 @@ final class EventStore {
                 minute: Int(sqlite3_column_int64(stmt, 0)),
                 kind: Int(sqlite3_column_int(stmt, 1)),
                 app: String(cString: sqlite3_column_text(stmt, 2)),
-                value: Int(sqlite3_column_int64(stmt, 3))
+                value: Int(sqlite3_column_int64(stmt, 3)),
+                source: String(cString: sqlite3_column_text(stmt, 4))
             ))
         }
         let buckets = Self.foldMinuteRows(rows) { date in
@@ -541,6 +619,12 @@ final class EventStore {
     /// Pure folding seam used by both SQLite export and zero-dependency tests.
     static func foldMinuteRows(_ rows: [MinuteRow],
                                utcOffsetMinutes: (Date) -> Int) -> [MinuteBucket] {
+        struct SourceAccum {
+            var keys = 0
+            var clicks = 0
+            var scrollTicks = 0
+            var pointerDistance = 0
+        }
         struct Accum {
             var keys = 0
             var clicksLeft = 0
@@ -549,22 +633,36 @@ final class EventStore {
             var scrollTicks = 0
             var pointerDistance = 0
             var apps: [String: Int] = [:]
+            var sources: [String: SourceAccum] = [:]
         }
         var byMinute: [Int: Accum] = [:]
         for row in rows {
             var accum = byMinute[row.minute] ?? Accum()
+            var source = accum.sources[row.source] ?? SourceAccum()
             switch EventKind(rawValue: row.kind) {
             case .key:
                 accum.keys += row.value
                 accum.apps[row.app, default: 0] += row.value
-            case .click: accum.clicksLeft += row.value
-            case .rightClick: accum.clicksRight += row.value
-            case .otherClick: accum.clicksOther += row.value
-            case .scroll: accum.scrollTicks += row.value
-            case .move: accum.pointerDistance += row.value
+                source.keys += row.value
+            case .click:
+                accum.clicksLeft += row.value
+                source.clicks += row.value
+            case .rightClick:
+                accum.clicksRight += row.value
+                source.clicks += row.value
+            case .otherClick:
+                accum.clicksOther += row.value
+                source.clicks += row.value
+            case .scroll:
+                accum.scrollTicks += row.value
+                source.scrollTicks += row.value
+            case .move:
+                accum.pointerDistance += row.value
+                source.pointerDistance += row.value
             // Subset/composition kinds overlap the totals above; unknown kinds are legacy noise.
             default: break
             }
+            accum.sources[row.source] = source
             byMinute[row.minute] = accum
         }
 
@@ -573,6 +671,17 @@ final class EventStore {
             let date = Date(timeIntervalSince1970: TimeInterval(minute))
             let apps = value.apps.keys.sorted().map {
                 MinuteAppCount(bundleID: $0, keys: value.apps[$0] ?? 0)
+            }
+            // Drop classes that contributed nothing, so an idle minute sends no split at all.
+            let inputs = value.sources.keys.sorted().compactMap { source -> MinuteInputCount? in
+                guard let totals = value.sources[source],
+                      totals.keys + totals.clicks + totals.scrollTicks + totals.pointerDistance > 0
+                else { return nil }
+                return MinuteInputCount(source: source,
+                                        keys: totals.keys,
+                                        clicks: totals.clicks,
+                                        scrollTicks: totals.scrollTicks,
+                                        pointerDistance: totals.pointerDistance)
             }
             return MinuteBucket(
                 startedAt: date,
@@ -583,7 +692,8 @@ final class EventStore {
                 clicksOther: value.clicksOther,
                 scrollTicks: value.scrollTicks,
                 pointerDistance: value.pointerDistance,
-                apps: apps
+                apps: apps,
+                inputs: inputs
             )
         }
         return buckets
@@ -648,6 +758,16 @@ final class EventStore {
     private func pruneLocked() {
         let cutoff = EventStore.bucket(for: Date().addingTimeInterval(-Double(retentionDays) * 86400))
         exec("DELETE FROM events WHERE bucket < \(cutoff);")
+        let dayCutoff = EventStore.dayString(for: Date().addingTimeInterval(-Double(retentionDays) * 86400))
+        exec("DELETE FROM key_presses WHERE day < '\(dayCutoff)';")
+        exec("DELETE FROM layout_usage WHERE day < '\(dayCutoff)';")
+    }
+
+    /// Local "yyyy-MM-dd", matching the day keys used by the sync data and the daily queries.
+    static func dayString(for date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: date)
     }
 
     func prune() {
@@ -1050,6 +1170,111 @@ final class EventStore {
                         let display = Int(sqlite3_column_int64(stmt, 0))
                         guard let kind = EventKind(rawValue: Int(sqlite3_column_int(stmt, 1))) else { continue }
                         result[display, default: [:]][kind] = Int(sqlite3_column_int64(stmt, 2))
+                    }
+                }
+                sqlite3_finalize(stmt)
+            }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    // MARK: Key heatmap (opt-in) and layouts
+
+    /// Persist a day's accumulated per-keycode counts. Only ever called while the heatmap
+    /// preference is on; turning it off stops writes and `clearKeyHeatmap()` removes the history.
+    func recordKeyPresses(day: String, counts: [Int: Int]) {
+        guard !counts.isEmpty else { return }
+        queue.async { [weak self] in
+            guard let self, let db = self.db else { return }
+            let sql = """
+                INSERT INTO key_presses(day, keycode, count) VALUES(?, ?, ?)
+                ON CONFLICT(day, keycode) DO UPDATE SET count = count + excluded.count;
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_exec(db, "BEGIN;", nil, nil, nil)
+            for (keycode, count) in counts where count != 0 {
+                sqlite3_reset(stmt)
+                sqlite3_bind_text(stmt, 1, day, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int(stmt, 2, Int32(keycode))
+                sqlite3_bind_int64(stmt, 3, Int64(count))
+                sqlite3_step(stmt)
+            }
+            sqlite3_exec(db, "COMMIT;", nil, nil, nil)
+        }
+    }
+
+    /// Per-keycode totals for the last `days` local days. Completion delivered on the main queue.
+    func keyPresses(days: Int, completion: @escaping ([Int: Int]) -> Void) {
+        let since = EventStore.dayString(for: Calendar.current.date(byAdding: .day, value: -(days - 1), to: Date()) ?? Date())
+        queue.async { [weak self] in
+            var result: [Int: Int] = [:]
+            if let db = self?.db {
+                var stmt: OpaquePointer?
+                let sql = "SELECT keycode, SUM(count) FROM key_presses WHERE day >= ? GROUP BY keycode;"
+                if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(stmt, 1, since, -1, SQLITE_TRANSIENT)
+                    while sqlite3_step(stmt) == SQLITE_ROW {
+                        result[Int(sqlite3_column_int(stmt, 0))] = Int(sqlite3_column_int64(stmt, 1))
+                    }
+                }
+                sqlite3_finalize(stmt)
+            }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    /// Drop all recorded key-press history (used when the user turns the heatmap off).
+    func clearKeyHeatmap(completion: (() -> Void)? = nil) {
+        queue.async { [weak self] in
+            self?.exec("DELETE FROM key_presses;")
+            if let completion { DispatchQueue.main.async { completion() } }
+        }
+    }
+
+    /// Persist a day's keystroke counts per input source.
+    func recordLayoutUsage(day: String, counts: [LayoutKey: Int]) {
+        guard !counts.isEmpty else { return }
+        queue.async { [weak self] in
+            guard let self, let db = self.db else { return }
+            let sql = """
+                INSERT INTO layout_usage(day, layout, name, count) VALUES(?, ?, ?, ?)
+                ON CONFLICT(day, layout) DO UPDATE SET count = count + excluded.count, name = excluded.name;
+                """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_exec(db, "BEGIN;", nil, nil, nil)
+            for (layout, count) in counts where count != 0 {
+                sqlite3_reset(stmt)
+                sqlite3_bind_text(stmt, 1, day, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(stmt, 2, layout.id, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(stmt, 3, layout.name, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int64(stmt, 4, Int64(count))
+                sqlite3_step(stmt)
+            }
+            sqlite3_exec(db, "COMMIT;", nil, nil, nil)
+        }
+    }
+
+    /// Keystrokes per input source over the last `days` local days, busiest first.
+    func layoutUsage(days: Int, completion: @escaping ([(layout: LayoutKey, count: Int)]) -> Void) {
+        let since = EventStore.dayString(for: Calendar.current.date(byAdding: .day, value: -(days - 1), to: Date()) ?? Date())
+        queue.async { [weak self] in
+            var result: [(layout: LayoutKey, count: Int)] = []
+            if let db = self?.db {
+                var stmt: OpaquePointer?
+                let sql = """
+                    SELECT layout, name, SUM(count) AS s FROM layout_usage
+                    WHERE day >= ? GROUP BY layout ORDER BY s DESC;
+                    """
+                if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(stmt, 1, since, -1, SQLITE_TRANSIENT)
+                    while sqlite3_step(stmt) == SQLITE_ROW {
+                        let key = LayoutKey(id: String(cString: sqlite3_column_text(stmt, 0)),
+                                            name: String(cString: sqlite3_column_text(stmt, 1)))
+                        result.append((key, Int(sqlite3_column_int64(stmt, 2))))
                     }
                 }
                 sqlite3_finalize(stmt)

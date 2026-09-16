@@ -41,6 +41,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Which screen pointer input is happening on (keystrokes stay unattributed — the pointer may
     // be parked on a different screen than the one you're typing into).
     private let displayResolver = DisplayResolver.shared
+    // Which layout the keystrokes were typed in, and (only when the user opts in) which keys.
+    private let layoutTracker = KeyboardLayoutTracker.shared
+    private var layoutAccum: [LayoutKey: Int] = [:]
+    private var keycodeAccum: [Int: Int] = [:]
+    private var accumDay: String = EventStore.dayString(for: Date())
     // Last trackpad pressure stage, so a Force click counts once per press, not per pressure event.
     private var lastPressureStage: Int = 0
 
@@ -264,6 +269,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Key set to true only when the user explicitly turns "Start at Login" off from the menu.
     private let loginItemDisabledKey = "loginItemUserDisabled"
 
+    /// Opt-in per-key counting for the heatmap. Off unless the user turns it on in the History
+    /// window; read live on the hot path so switching it off stops recording at once.
+    static let keyHeatmapDefaultsKey = "keyHeatmapEnabled"
+    static var keyHeatmapEnabled: Bool {
+        UserDefaults.standard.bool(forKey: keyHeatmapDefaultsKey)
+    }
+
     /// Keep the app registered as a login item on every launch (self-heals a first-run failure or a
     /// registration that got cleared), unless the user has explicitly opted out via the menu toggle.
     private func ensureLoginItemEnabled() {
@@ -296,6 +308,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             eventStore.record(bucket: currentBucket, counts: bucketAccum)
             bucketAccum.removeAll()
         }
+        flushDailyAccumulations()
         eventStore.flushAndWait()
 
         checkDayChange()
@@ -1434,10 +1447,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Persist the day-keyed accumulations (layouts, and key codes when the heatmap is on).
+    /// Called on every bucket rollover and on quit, so at most 5s of counts are ever in memory.
+    private func flushDailyAccumulations() {
+        if !layoutAccum.isEmpty {
+            eventStore.recordLayoutUsage(day: accumDay, counts: layoutAccum)
+            layoutAccum.removeAll(keepingCapacity: true)
+        }
+        if !keycodeAccum.isEmpty {
+            eventStore.recordKeyPresses(day: accumDay, counts: keycodeAccum)
+            keycodeAccum.removeAll(keepingCapacity: true)
+        }
+        accumDay = EventStore.dayString(for: Date())
+    }
+
     /// Flush the previous bucket's accumulations once wall-clock crosses into a new 5s bucket.
     private func rolloverBucketIfNeeded() {
         let b = EventStore.bucket()
         guard b != currentBucket else { return }
+        flushDailyAccumulations()
         if !bucketAccum.isEmpty {
             eventStore.record(bucket: currentBucket, counts: bucketAccum)
             bucketAccum.removeAll(keepingCapacity: true)
@@ -1557,6 +1585,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if !event.flags.intersection([.maskCommand, .maskControl, .maskAlternate]).isEmpty {
             accumulate(.keyShortcut, amount: 1, device: device)
+        }
+        layoutAccum[layoutTracker.current, default: 0] += 1
+        // Per-key counts are opt-in and local-only; the preference is read live so turning the
+        // toggle off stops recording immediately.
+        if AppDelegate.keyHeatmapEnabled {
+            keycodeAccum[keyCode, default: 0] += 1
         }
 
         localKeystrokeCount += 1

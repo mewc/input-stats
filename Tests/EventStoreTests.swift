@@ -17,7 +17,10 @@ struct EventStoreTests {
         ratesUseActiveMinutesOnly()
         shippedKindRawValuesAreStable()
         displayIdentityIsStableAndNamed()
-        print("InputStats event-store tests: 12 passed")
+        layoutKeysFallBackToTheirIdentifier()
+        splitsMinutesByDeviceClass()
+        classifiesDeviceRowsIntoCloudCategories()
+        print("InputStats event-store tests: 15 passed")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -169,7 +172,53 @@ struct EventStoreTests {
         expect(DisplayTarget.unknownID == 0, "unknown screen must stay the zero default")
     }
 
-    private static func row(_ minute: Int, _ kind: EventKind, _ app: String, _ value: Int) -> EventStore.MinuteRow {
-        .init(minute: minute, kind: kind.rawValue, app: app, value: value)
+    private static func layoutKeysFallBackToTheirIdentifier() {
+        let named = LayoutKey(id: "com.apple.keylayout.Australian", name: "Australian")
+        expect(named.displayName == "Australian", "named layout should show its localized name")
+        let unnamed = LayoutKey(id: "com.apple.keylayout.US", name: "")
+        expect(unnamed.displayName == "com.apple.keylayout.US", "unnamed layout falls back to its id")
+        expect(named != unnamed, "layouts are distinguished by id")
+        expect(EventStore.dayString(for: Date(timeIntervalSince1970: 0)).count == 10, "day keys are yyyy-MM-dd")
+    }
+
+    /// The cloud rejects a split whose totals exceed the minute, so the fold must partition
+    /// exactly — and must never leak anything but the four coarse classes.
+    private static func splitsMinutesByDeviceClass() {
+        let buckets = EventStore.foldMinuteRows([
+            row(120, .key, "app", 10, "builtin"),
+            row(120, .key, "app", 20, "external"),
+            row(120, .click, "app", 3, "external"),
+            row(120, .rightClick, "app", 1, "external"),
+            row(120, .scroll, "app", 5, "external"),
+            row(120, .move, "app", 900, "external"),
+            row(120, .keyRepeat, "app", 4, "builtin"),   // overlay kind: must not be counted
+        ]) { _ in 0 }
+        let bucket = buckets[0]
+        expect(bucket.keys == 30, "bucket keys changed")
+        let split = Dictionary(uniqueKeysWithValues: bucket.inputs.map { ($0.source, $0) })
+        expect(split.count == 2, "expected exactly the two contributing classes")
+        expect(split["builtin"]?.keys == 10 && split["external"]?.keys == 20, "keys split wrong")
+        expect(split["external"]?.clicks == 4, "clicks should sum every button for the class")
+        expect(split["external"]?.scrollTicks == 5 && split["external"]?.pointerDistance == 900, "mouse split wrong")
+        let keyTotal = bucket.inputs.reduce(0) { $0 + $1.keys }
+        let clickTotal = bucket.inputs.reduce(0) { $0 + $1.clicks }
+        expect(keyTotal <= bucket.keys, "split keys exceed the minute")
+        expect(clickTotal <= bucket.clicksLeft + bucket.clicksRight + bucket.clicksOther, "split clicks exceed the minute")
+        expect(bucket.inputs.map(\.source) == ["builtin", "external"], "split is not deterministically ordered")
+    }
+
+    private static func classifiesDeviceRowsIntoCloudCategories() {
+        expect(InputSourceClass.classify(isSoftware: false, isBuiltIn: true, isAttributed: true) == "builtin", "built-in")
+        expect(InputSourceClass.classify(isSoftware: false, isBuiltIn: false, isAttributed: true) == "external", "external")
+        expect(InputSourceClass.classify(isSoftware: true, isBuiltIn: false, isAttributed: true) == "virtual", "software")
+        expect(InputSourceClass.classify(isSoftware: true, isBuiltIn: true, isAttributed: false) == "unknown", "legacy rows")
+    }
+
+    private static func row(_ minute: Int,
+                            _ kind: EventKind,
+                            _ app: String,
+                            _ value: Int,
+                            _ source: String = InputSourceClass.unknown) -> EventStore.MinuteRow {
+        .init(minute: minute, kind: kind.rawValue, app: app, value: value, source: source)
     }
 }
